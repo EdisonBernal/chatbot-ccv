@@ -29,20 +29,21 @@
 ### Campos de Paciente
 - Nombre completo
 - Número de documento (único)
-- Teléfono
+- Teléfono (normalización automática)
 - Email
 - Fecha de nacimiento
-- Género
 - EPS (Entidad Prestadora de Salud)
-- Dirección
-- Historial médico
-- Alergias conocidas
 
 ### Acciones
 - **Crear**: Formulario completo
 - **Editar**: Modificar información del paciente
 - **Eliminar**: Con confirmación de seguridad
-- **Ver detalles**: Información completa
+- **Ver detalles**: Información completa con relación a EPS
+
+### Normalización de Teléfonos
+- Formato consistente (+X) automático
+- Triggers en insert/update
+- Índices únicos para prevenir duplicados
 
 ---
 
@@ -59,8 +60,9 @@
 - Especialidad requerida
 - Fecha solicitada
 - Estado actual
-- Último actualización
+- Última actualización
 - Filtrado por estado
+- Edición inline de estado
 
 ### Detalle de Solicitud
 - Información completa de la solicitud
@@ -92,78 +94,140 @@
 
 ---
 
-## 5. Conversaciones WhatsApp (Tipo WhatsApp UI)
+## 5. Conversaciones WhatsApp (Interfaz WhatsApp)
 
 ### Interfaz
 ```
 ┌─────────────────┬──────────────────────────┐
-│ 📱 Mensajes     │ Chatbot Manager         │
+│ 📱 Mensajes     │ Chat Actual              │
 ├─────────────────┼──────────────────────────┤
-│ 🟢 Juan García  │ (Cuando selecciona)     │
-│ + 57 3001234567 │                          │
-│ "Hola, quisiera │ 📱 Juan García          │
-│ agendar..."     │ +57 3001234567          │
-│                 │ ────────────────────────│
-│ 🟢 María López  │ Mensajes:               │
-│ + 57 3012345678 │ • Hola, quisiera...    │
-│ "Necesito una   │ • Te llamamos mañana... │
-│  cita..."       │ ────────────────────────│
-│                 │ [Escribe mensaje...]   │
-│ Sin leer: 2     │ [Enviar →]              │
+│ 🟢 Juan García  │ 📱 Juan García           │
+│ + 57 3001234567 │ +57 3001234567           │
+│ "Hola, quisiera │ ────────────────────────│
+│ agendar..."     │ Hola, quisiera...       │
+│                 │   ✓✓ Te llamamos...     │
+│ 🟢 María López  │ ────────────────────────│
+│ + 57 3012345678 │ [Escribe mensaje...]    │
+│ "Necesito una   │ [Enviar →]              │
+│  cita..."       │                          │
+│                 │                          │
+│ Sin leer: 2     │                          │
 └─────────────────┴──────────────────────────┘
 ```
 
 ### Características
 - **Punto Verde** (🟢): Indica mensajes nuevos sin leer
+- **Estado de Entrega**: ✓ enviado | ✓✓ entregado | ✓✓ azul leído
+- **Blue Checks**: Confirmaciones de lectura vía Read Horizon de Twilio
 - **Búsqueda**: Filtro en tiempo real
-- **Sincronización**: Bidireccional con Twilio
-- **Historial**: Todos los mensajes guardados
-- **Responsive**: Lista se oculta en mobile
+- **Sincronización**: Bidireccional con Twilio Conversations API
+- **Broadcasting**: Actualización en tiempo real con Supabase Realtime
+- **Historial**: Todos los mensajes guardados con delivery status
+- **Responsive**: Lista se oculta en mobile al abrir chat
 
 ### Estados de Conversación
 - 🆕 **Nueva**: Conversación recién iniciada
-- 🎧 **En atención**: Siendo procesada
-- ✅ **Resuelta**: Problema solucionado
-- 📁 **Archivada**: Cerrada
+- 🎧 **En atención**: Siendo procesada por staff
+- ✅ **Cerrada**: Conversación finalizada
+
+### Twilio Conversations API
+- Token service con ChatGrant (TTL: 1h)
+- Resolución automática de Conversation SID
+- Gestión de participantes
+- Read Horizon para blue checks
+- Webhook con validación HMAC-SHA1
+- Eventos: `onMessageAdded`, `onDeliveryUpdated`
 
 ---
 
-## 6. Sistema de Notificaciones
+## 6. Chatbot Automatizado
+
+### Panel Administrativo
+- ✅ Lista de configuraciones con crear/editar/eliminar/toggle
+- ✅ Editor de pasos con vista previa en tiempo real
+- ✅ Constructor de acciones sin código
+- ✅ Diálogos intuitivos para crear/editar
+- ✅ Vista previa completa del flujo antes de activar
+- ✅ Solo accesible para administradores
+
+### Tipos de Triggers
+| Trigger | Descripción | Ejemplo |
+|---------|-------------|---------|
+| **Mensaje Recibido** | Se ejecuta con cualquier mensaje | Saludo automático |
+| **Palabra Clave** | Palabras específicas | "cita", "agendar", "horarios" |
+| **Tiene Cita Pendiente** | Paciente con cita sin confirmar | Recordatorio |
+| **Paciente Nuevo** | Primera interacción | Bienvenida especial |
+| **Después de Retardo** | X minutos sin respuesta | Seguimiento, escalación |
+
+### Tipos de Acciones
+| Acción | Descripción |
+|--------|-------------|
+| **Enviar Mensaje** | Mensaje automático con variables dinámicas |
+| **Crear Solicitud de Cita** | Crea cita vinculada a la conversación |
+| **Recopilar Información** | Solicita datos (email, teléfono, etc.) |
+| **Enviar Recordatorio** | Recordatorio personalizado |
+| **Derivar a Agente** | Escalación a humano |
+| **Actualizar Estado Conversación** | Cambiar estado del chat |
+| **Enviar Confirmación** | Confirmación de acción completada |
+| **Programar Paso** | Programar siguiente ejecución |
+
+### Variables Dinámicas
+- `{{nombre}}`, `{{email}}`, `{{telefono}}`
+- `{{fecha_cita}}`, `{{hora_cita}}`, `{{doctor_name}}`
+- `{{especialidad}}`, `{{eps}}`
+
+### Motor de Ejecución
+- Progresión automática de pasos
+- Contexto persistente por conversación
+- Mensaje de fallback configurable
+- Escalación automática por reintentos
+- Logging de ejecución para debugging
+
+---
+
+## 7. Sistema de Notificaciones
 
 ### Indicadores Visuales
 - **Punto verde** (🟢) en conversaciones sin leer
-- **Badge rojo** en dashboard con contador
+- **Ticks de entrega**: ✓ enviado, ✓✓ entregado, ✓✓ azul leído
 - **Timestamps**: "hace 5 minutos", "hace 2 horas"
 - **Estados de color**: Cada estado tiene color único
+- **Conteo de no leídos** en la lista de conversaciones
 
 ---
 
-## 7. Administración
+## 8. Administración
 
 ### Gestión de Especialidades
 - ✅ Crear nuevas especialidades
 - ✅ Editar información
 - ✅ Activar/desactivar
 - ✅ Eliminar (con validación)
-- Descripción y ícono opcional
+- Descripción opcional
 
 ### Gestión de EPS (Aseguradoras)
 - ✅ Agregar EPS
 - ✅ Editar información
 - ✅ Activar/desactivar
 - ✅ Eliminar
-- Código, teléfono, email, website
+- Código opcional
 
 ### Gestión de Usuarios
-- ✅ Crear usuario (email, contraseña)
+- ✅ Ver usuarios del sistema
 - ✅ Asignar rol (Admin / Recepción)
 - ✅ Activar/desactivar
 - ✅ Cambiar rol
-- Ver último login
+
+### Configuración del Chatbot
+- ✅ Crear flujos automáticos
+- ✅ Gestionar pasos y acciones
+- ✅ Vista previa del flujo
+- ✅ Activar/desactivar chatbots
+- ✅ Logs de ejecución
 
 ---
 
-## 8. Seguridad y Control de Acceso
+## 9. Seguridad y Control de Acceso
 
 ### Autenticación
 - ✅ Supabase Auth
@@ -172,28 +236,30 @@
 - ✅ Recovery de contraseña
 
 ### Control de Roles
-- **Admin**: Acceso total, gestión de usuarios
-- **Recepción**: Gestión de pacientes y citas
-- **Middleware**: Protección automática de rutas
+- **Admin**: Acceso total, gestión de usuarios, configuración de chatbot
+- **Recepción**: Gestión de pacientes, citas y conversaciones
+- **Middleware**: Protección automática de rutas `/dashboard` y `/admin`
 
 ### Row Level Security (RLS)
 - Usuarios solo ven su perfil (excepto admin)
 - Pacientes visibles para autenticados
 - Solicitudes según asignación
 - Conversaciones según usuario
+- Chatbot: solo admin puede configurar
 
 ### Validación de Twilio
-- ✅ Verificación de firma HMAC
+- ✅ Verificación de firma HMAC-SHA1
 - ✅ Solo acepta mensajes de Twilio
-- ✅ Prevents spoofing
+- ✅ Previene spoofing
+- ✅ Opción de desactivar en desarrollo (`TWILIO_SKIP_SIGNATURE=1`)
 
 ---
 
-## 9. Base de Datos
+## 10. Base de Datos
 
 ### Tablas Principales
 ```
-users → especialidades
+users → especialidades / eps
   ↓
 pacientes ← eps
   ↓
@@ -201,41 +267,49 @@ solicitudes_citas → historial_solicitudes
   ↓
 conversaciones → conversaciones_mensajes
   ↓
+chatbot_config → chatbot_steps → chatbot_step_actions
+  ↓
+chatbot_context / chatbot_execution_logs
+  ↓
 logs_actividad
 ```
 
 ### Características de Datos
 - ✅ Integridad referencial
-- ✅ Eliminación en cascada (when appropriate)
+- ✅ Eliminación en cascada (where appropriate)
 - ✅ Timestamps automáticos (created_at, updated_at)
 - ✅ Índices para búsqueda rápida
 - ✅ Auditoría completa
+- ✅ Normalización de teléfonos con triggers
+- ✅ Enums para tipos y estados (delivery_status, trigger_type, action_type)
 
 ---
 
-## 10. Integración Twilio WhatsApp
+## 11. Integración Twilio WhatsApp
 
 ### Flujo de Mensajes
 
 **Entrante (Cliente → CRM)**
 ```
 1. Cliente envía WhatsApp
-2. Twilio recibe el mensaje
-3. Envía webhook a: /api/webhooks/twilio
-4. Sistema valida firma HMAC
-5. Crea/actualiza conversación
-6. Guarda mensaje en BD
-7. Muestra punto verde en UI
+2. Twilio Conversations recibe el mensaje
+3. Envía Post-Event webhook a: /api/webhooks/twilio
+4. Sistema valida firma HMAC-SHA1
+5. Guarda mensaje en BD con delivery_status
+6. Si hay chatbot activo → procesa mensaje automáticamente
+7. Broadcast en tiempo real a clientes conectados
+8. Muestra punto verde en UI
 ```
 
 **Saliente (CRM → Cliente)**
 ```
 1. Staff escribe respuesta en UI
 2. Click en "Enviar"
-3. Sistema guarda mensaje localmente
-4. Envía a API de Twilio
+3. Envía mensaje vía Twilio Conversations API
+4. Guarda mensaje localmente con status 'sent'
 5. Twilio envía WhatsApp al cliente
-6. Confirma entrega en UI
+6. Webhook actualiza delivery_status: sent → delivered → read
+7. UI muestra ticks de estado actualizados
 ```
 
 ### Verificación de Seguridad
@@ -245,19 +319,19 @@ logs_actividad
 
 ---
 
-## 11. Características Técnicas
+## 12. Características Técnicas
 
 ### Performance
 - ✅ Índices en búsquedas frecuentes
 - ✅ Lazy loading de componentes
-- ✅ Caché de datos con SWR
-- ✅ Optimización de imágenes
+- ✅ Caché de datos con custom hooks
+- ✅ Broadcasting eficiente con Supabase Realtime
 
 ### Responsividad
 - ✅ Mobile-first design
 - ✅ Tablets optimizados
 - ✅ Desktop full-featured
-- ✅ Gestos táctiles soportados
+- ✅ Interfaz WhatsApp responsive (lista se oculta en mobile)
 
 ### Accesibilidad
 - ✅ Navegación por teclado
@@ -267,37 +341,27 @@ logs_actividad
 
 ---
 
-## 12. Reportes y Análisis
-
-### Disponibles
-- Citas por especialidad
-- Citas por estado
-- Actividad por usuario
-- Tiempo promedio de respuesta
-- Distribución de pacientes por EPS
-
-### Logs de Sistema
-- Quién hizo qué, cuándo
-- Cambios de estado
-- Acceso de usuarios
-- Errores y excepciones
-
----
-
 ## Resumen de Funcionalidades
 
 | Característica | Estado | Notas |
 |---|---|---|
 | Dashboard | ✅ | Métricas en tiempo real |
-| Gestión de Pacientes | ✅ | CRUD completo |
-| Solicitudes de Citas | ✅ | Con historial |
+| Gestión de Pacientes | ✅ | CRUD completo con normalización de teléfono |
+| Solicitudes de Citas | ✅ | Con historial automático |
 | Kanban Board | ✅ | Drag & drop |
-| Conversaciones WhatsApp | ✅ | Tipo WhatsApp UI |
-| Indicador de Mensajes Nuevos | ✅ | Punto verde |
-| Integración Twilio | ✅ | Bidireccional |
-| Administración | ✅ | Usuarios, Especialidades, EPS |
+| Conversaciones WhatsApp | ✅ | Interfaz tipo WhatsApp |
+| Estado de Entrega | ✅ | queued → sent → delivered → read |
+| Blue Checks (Read Receipts) | ✅ | Vía Read Horizon |
+| Broadcasting en Tiempo Real | ✅ | Supabase Realtime |
+| Indicador de Mensajes Nuevos | ✅ | Punto verde + conteo |
+| Integración Twilio | ✅ | Conversations API bidireccional |
+| Chatbot Automatizado | ✅ | Motor configurable con triggers y acciones |
+| Panel de Chatbot | ✅ | Admin UI con preview |
+| Administración | ✅ | Usuarios, Especialidades, EPS, Chatbot |
 | Autenticación | ✅ | Supabase Auth |
 | Control de Roles | ✅ | Admin / Recepción |
+| Normalización de Teléfonos | ✅ | Triggers automáticos |
+| Webhook Seguro | ✅ | HMAC-SHA1 |
 | RLS | ✅ | Row Level Security |
 | Validación de Twilio | ✅ | HMAC verification |
 | Auditoria | ✅ | Logs de actividad |

@@ -2,7 +2,7 @@
 
 ## 🎯 Visión General
 
-Se ha desarrollado un **CRM completo de gestión de citas médicas** con integración WhatsApp, autenticación segura, control de roles y una interfaz moderna tipo WhatsApp para conversaciones.
+Se ha desarrollado un **CRM completo de gestión de citas médicas** con integración WhatsApp bidireccional (Twilio Conversations API), chatbot automatizado configurable, autenticación segura, control de roles y una interfaz moderna tipo WhatsApp para conversaciones.
 
 **Estado**: ✅ **COMPLETO Y LISTO PARA PRODUCCIÓN**
 
@@ -12,64 +12,77 @@ Se ha desarrollado un **CRM completo de gestión de citas médicas** con integra
 
 | Métrica | Valor |
 |---------|-------|
-| **Líneas de código** | ~15,000+ |
-| **Componentes React** | 25+ |
-| **Páginas/Rutas** | 12+ |
-| **Endpoints API** | 20+ |
-| **Tablas de BD** | 9 |
-| **Documentación** | 6 guías completas |
-| **Tiempo de desarrollo** | Acelerado |
-| **Estatus de pruebas** | Estructura lista |
+| **Componentes React** | 30+ |
+| **Páginas/Rutas** | 15+ |
+| **Endpoints API** | 40+ |
+| **Tablas de BD** | 14+ |
+| **Migraciones SQL** | 10 scripts |
+| **Servicios** | 7 (patients, appointments, conversations, chatbot, users, specialties, eps) |
+| **Hooks personalizados** | 4 (use-mobile, use-query, use-toast, use-twilio-conversations) |
+| **Documentación** | 10 guías completas |
 
 ---
 
 ## ✨ Características Principales Implementadas
 
 ### 1. Dashboard Ejecutivo ✅
-- Métricas en tiempo real (solicitudes, conversaciones, usuarios)
-- Tarjetas de resumen por estado
-- Últimas actividades del sistema
-- Links rápidos a tareas críticas
+- Métricas en tiempo real (solicitudes por estado, conversaciones nuevas/en atención)
+- Total de solicitudes del día
+- Últimas solicitudes y conversaciones recientes
+- Links rápidos a módulos principales
 
 ### 2. Gestión de Pacientes ✅
 - CRUD completo con validaciones
-- Búsqueda avanzada por múltiples campos
-- Asociación con EPS
-- Historial médico y alergias
+- Búsqueda por nombre, teléfono o documento
+- Filtrado por EPS
+- Normalización automática de teléfonos
 - Formularios intuitivos crear/editar
 
 ### 3. Solicitudes de Citas ✅
 - Estados: Pendiente → En Revisión → Confirmada/Cancelada
-- Historial automático de cambios
+- Historial automático de cambios de estado
 - Filtrado y búsqueda
+- Edición inline de estado
 - Vinculación a conversaciones
-- Página de detalle con toda la información
+- Página de detalle con información completa
 
 ### 4. Kanban Board ✅
 - Vista visual por estados
 - Drag & Drop entre columnas
-- Actualización en tiempo real
+- Actualización automática de estado
 - Conteo de solicitudes por columna
 
-### 5. Conversaciones WhatsApp (NUEVA) ✅
+### 5. Conversaciones WhatsApp ✅
 - **Interfaz tipo WhatsApp**: Lista izquierda + Chat derecha
-- **Indicador de mensajes nuevos**: Punto verde (🟢)
-- **Sincronización bidireccional**: Recibe y envía mensajes
-- **Webhook seguro**: Validación HMAC de Twilio
-- **Responsive**: Funciona perfectamente en mobile
+- **Indicador de mensajes nuevos**: Punto verde (🟢) con conteo
+- **Estado de entrega**: ✓ enviado → ✓✓ entregado → ✓✓ azul leído
+- **Blue checks**: Vía Read Horizon de Twilio
+- **Broadcasting**: Actualización en tiempo real con Supabase Realtime
+- **Webhook seguro**: Validación HMAC-SHA1
+- **Responsive**: Funciona en desktop y mobile
 
-### 6. Administración ✅
-- Gestión de especialidades médicas
-- Gestión de aseguradoras (EPS)
-- Gestión de usuarios y roles
-- Control de acceso granular
+### 6. Chatbot Automatizado ✅
+- **Motor configurable**: Clase `ChatbotEngine` con procesamiento de mensajes
+- **5 tipos de triggers**: message_received, keyword, has_pending_appointment, new_patient, after_delay
+- **8 tipos de acciones**: send_message, create_appointment_request, send_reminder, collect_info, redirect_to_agent, update_conversation_status, send_confirmation, schedule_step
+- **Variables dinámicas**: {{nombre}}, {{email}}, {{telefono}}, etc.
+- **Panel admin**: Lista, editor de pasos, constructor de acciones, preview
+- **Logging de ejecución**: Auditoría completa en chatbot_execution_logs
+- **Contexto persistente**: Variables almacenadas por conversación
 
-### 7. Autenticación y Seguridad ✅
+### 7. Administración ✅
+- Gestión de especialidades médicas (CRUD, activar/desactivar)
+- Gestión de aseguradoras EPS (CRUD, código opcional)
+- Gestión de usuarios y roles (admin/recepción)
+- Configuración del chatbot (solo admin)
+
+### 8. Autenticación y Seguridad ✅
 - Supabase Auth (email/contraseña)
 - Control de roles (Admin/Recepción)
 - Row Level Security (RLS) en todas las tablas
 - Protección de rutas con middleware
-- Validación HMAC para Twilio
+- Validación HMAC-SHA1 para Twilio
+- Normalización de teléfonos para prevenir duplicados
 
 ---
 
@@ -78,211 +91,162 @@ Se ha desarrollado un **CRM completo de gestión de citas médicas** con integra
 ### Stack Tecnológico
 ```
 Frontend:
-  ├── Next.js 16 (App Router)
+  ├── Next.js 16.2 (App Router)
   ├── React 19
   ├── TypeScript
-  ├── Tailwind CSS
-  └── shadcn/ui (componentes)
+  ├── Tailwind CSS 4
+  ├── shadcn/ui + Radix UI
+  ├── React Hook Form + Zod
+  ├── Recharts
+  └── Vercel Analytics
 
 Backend:
   ├── Next.js API Routes
-  ├── Supabase (PostgreSQL)
-  └── Twilio WhatsApp API
+  ├── Supabase (PostgreSQL) + SSR
+  ├── Twilio Conversations API
+  └── ChatbotEngine
+
+Chat en Tiempo Real:
+  ├── @twilio/conversations SDK 3.x
+  ├── Supabase Realtime (broadcasting)
+  └── useTwilioConversations hook
 
 Seguridad:
-  ├── Supabase Auth
+  ├── Supabase Auth + SSR Middleware
   ├── Row Level Security
-  ├── HMAC Verification
-  └── HTTPS/SSL
+  ├── HMAC-SHA1 Webhook Verification
+  └── Phone normalization
 
 Infraestructura:
   ├── Vercel (hosting)
-  ├── Supabase (base de datos)
-  └── Twilio (WhatsApp)
+  ├── Supabase (base de datos + auth + realtime)
+  └── Twilio (Conversations API + WhatsApp)
 ```
 
-### Base de Datos (9 Tablas)
+### Base de Datos (14+ Tablas)
 
 ```sql
-users                          -- Usuarios del sistema
-  ├── roles (admin/recepcion)
-  └── timestamps
-
+-- Base
+users                          -- Usuarios (admin/recepcion)
 specialties                    -- Especialidades médicas
-  ├── nombre, descripción
-  └── estado (activa/inactiva)
+eps                           -- Aseguradoras
 
-eps                           -- Aseguradoras (EPS)
-  ├── datos de contacto
-  └── estado
+-- Pacientes
+patients                      -- Pacientes (con phone_number_normalized)
 
-patients                      -- Pacientes
-  ├── documento, contacto
-  ├── EPS asociada
-  └── historial médico
+-- Citas
+appointment_requests          -- Solicitudes (pendiente→confirmada)
+appointment_request_history   -- Auditoría de cambios
 
-appointment_requests          -- Solicitudes de citas
-  ├── estados (pendiente→confirmada)
-  ├── especialidad requerida
-  └── vinculación a conversaciones
+-- Conversaciones
+conversations                 -- Chats WhatsApp (con conversation_sid, last_view_at)
+conversation_messages         -- Mensajes (con delivery_status, message_index)
 
-appointment_request_history   -- Auditoria de cambios
-  ├── cambios de estado
-  └── user tracking
+-- Chatbot
+chatbot_config               -- Configuraciones del chatbot
+chatbot_steps                -- Pasos del flujo
+chatbot_step_actions         -- Acciones por paso
+chatbot_context              -- Variables de usuario por conversación
+chatbot_execution_logs       -- Auditoría de ejecuciones
 
-conversations                 -- Chats WhatsApp
-  ├── paciente, número
-  ├── last_message, last_view_at (nuevo)
-  └── estado
-
-conversation_messages        -- Mensajes
-  ├── sender_type (patient/staff)
-  └── timestamps
-
-system_activity_logs        -- Auditoria del sistema
-  └── acciones por usuario
+-- Sistema
+system_activity_logs         -- Registro general de actividad
 ```
 
 ---
 
-## 🔧 Nuevas Características en Esta Sesión
+## 🔧 Módulos Implementados
 
-### A. Interfaz WhatsApp Completa
-**Archivo**: `components/conversations/whatsapp-conversations-client.tsx`
-- Layout de dos columnas (lista + chat)
-- Responsive en mobile
+### A. Twilio Conversations API
+- Token service con ChatGrant (TTL: 1h)
+- Resolución automática de Conversation SID
+- Gestión de participantes
+- Read Horizon para blue checks
+- Delivery status tracking (queued → sent → delivered → read)
+- Webhook con validación HMAC-SHA1
+- Eventos: onMessageAdded, onDeliveryUpdated
+- Soporte legacy para Messaging API
+
+### B. Chatbot Engine
+- Motor de procesamiento de mensajes
+- Verificación de triggers configurable
+- Ejecución secuencial de acciones
+- Variables dinámicas con resolución automática
+- Contexto persistente por conversación
+- Fallback y escalación automática
+- Logging completo de ejecuciones
+
+### C. Broadcasting en Tiempo Real
+- Supabase Realtime para sincronización
+- Actualización instantánea de la UI
+- Broadcasting de mensajes y estados de entrega
+
+### D. Normalización de Teléfonos
+- Función PostgreSQL `normalize_phone()`
+- Triggers automáticos en insert/update
+- Columnas normalizadas con índices únicos
+- Prevención de duplicados
+
+### E. Interfaz WhatsApp
+- Layout dual-pane (lista + chat)
+- Responsive (lista se oculta en mobile)
+- Punto verde para mensajes sin leer
+- Ticks de entrega visuales
 - Búsqueda en tiempo real
-- Scroll automático a último mensaje
-
-### B. Indicador de Mensajes Nuevos
-**Implementación**:
-- Columna `last_view_at` en tabla `conversations`
-- Punto verde (🟢) cuando hay mensajes sin leer
-- Se actualiza automáticamente cuando abres chat
-- Usar: `hasNewMessages(conversation)`
-
-### C. Webhook Twilio Mejorado
-**Archivo**: `app/api/webhooks/twilio/route.ts`
-- Validación de firma HMAC-SHA1
-- Previene spoofing de mensajes
-- Guarda todos los mensajes en BD
-- Actualiza `last_message` y `last_message_at`
-
-### D. Nuevos Endpoints
-- `GET /api/conversations/[id]/messages` - Obtener mensajes
-- `POST /api/conversations/[id]/view` - Marcar como visto
-- `POST /api/conversations/[id]/reply` - Enviar con Twilio
-
-### E. Migración de Base de Datos
-**Archivo**: `scripts/03-migration-add-columns.sql`
-```sql
-ALTER TABLE conversations ADD COLUMN last_message text;
-ALTER TABLE conversations ADD COLUMN last_view_at timestamp with time zone;
-```
 
 ---
 
-## 📁 Estructura de Archivos Clave
+## 📁 Estructura de Archivos
 
 ```
-/vercel/share/v0-project/
-├── app/
-│   ├── dashboard/
-│   │   ├── page.tsx                    -- Dashboard principal
-│   │   ├── patients/                   -- Gestión de pacientes
-│   │   ├── appointments/               -- Solicitudes de citas
-│   │   ├── kanban/                     -- Tablero Kanban
-│   │   ├── conversations/              -- Chats WhatsApp
-│   │   │   └── page.tsx               -- USA WhatsAppConversationsClient
-│   │   └── admin/                      -- Administración
-│   └── api/
-│       ├── patients/                   -- CRUD pacientes
-│       ├── appointments/               -- CRUD citas
-│       ├── conversations/              -- CRUD conversaciones + reply
-│       │   └── [id]/view/route.ts     -- Marcar como visto
-│       ├── webhooks/twilio/route.ts   -- Webhook Twilio
-│       └── ...
-│
-├── components/
-│   ├── conversations/
-│   │   ├── whatsapp-conversations-client.tsx  -- NUEVA: UI tipo WhatsApp
-│   │   ├── conversation-detail-client.tsx
-│   │   └── conversations-client.tsx           -- Antigua (tabla)
-│   ├── patients/
-│   ├── appointments/
-│   ├── admin/
-│   ├── dashboard/
-│   └── layout/
-│
-├── lib/
-│   ├── services/
-│   │   ├── conversations.ts            -- Actualizado con updateConversation
-│   │   ├── patients.ts
-│   │   ├── appointments.ts
-│   │   └── ...
-│   ├── types.ts
-│   └── supabase/
-│
-├── scripts/
-│   ├── 01-init-database.sql           -- Schema completo
-│   ├── 02-seed-data.sql               -- Datos de ejemplo
-│   └── 03-migration-add-columns.sql   -- NUEVO: Columnas para mensajes nuevos
-│
-├── middleware.ts                       -- Protección de rutas
-│
-├── TWILIO_SETUP.md                    -- Guía Twilio NUEVA
-├── DEPLOYMENT.md                       -- Guía Vercel NUEVA
-├── CHANGELOG.md                        -- Cambios recientes NUEVO
-├── FEATURES.md                         -- Características NUEVO
-├── README.md                           -- Actualizado
-├── .env.example                        -- Actualizado con Twilio correcto
-└── package.json
-```
+app/
+├── api/
+│   ├── appointments/           -- CRUD solicitudes + status
+│   ├── chatbot/                -- CRUD chatbot config, steps, actions
+│   ├── conversations/          -- CRUD conversaciones + reply + view + read
+│   ├── debug/                  -- Endpoints de testing (dev only)
+│   ├── eps/                    -- CRUD aseguradoras
+│   ├── patients/               -- CRUD pacientes
+│   ├── specialties/            -- CRUD especialidades
+│   ├── twilio/token/           -- Token service
+│   ├── users/                  -- Usuarios
+│   └── webhooks/twilio/        -- Webhook Twilio Conversations
+├── auth/login/                 -- Página de login
+└── dashboard/
+    ├── admin/
+    │   ├── chatbot/            -- Panel de configuración del chatbot
+    │   ├── eps/                -- Gestión de aseguradoras
+    │   ├── specialties/        -- Gestión de especialidades
+    │   └── users/              -- Gestión de usuarios
+    ├── appointments/           -- Solicitudes de citas
+    ├── conversations/          -- Chat WhatsApp
+    ├── kanban/                 -- Tablero Kanban
+    └── patients/               -- Gestión de pacientes
 
----
+components/
+├── admin/chatbot/              -- 7 componentes del chatbot
+├── appointments/               -- Tabla, formulario, detalle
+├── conversations/              -- WhatsApp UI, detalle
+├── dashboard/                  -- Métricas, recientes
+├── kanban/                     -- Tablero drag & drop
+├── layout/                     -- Sidebar
+├── patients/                   -- Tabla, formulario
+└── ui/                         -- Components shadcn/ui
 
-## 🚀 Pasos para Usar
+hooks/
+├── use-mobile.ts               -- Detección de mobile
+├── use-query.ts                -- Data fetching
+├── use-toast.ts                -- Notificaciones toast
+└── use-twilio-conversations.ts -- SDK Twilio + Read Horizon
 
-### 1. Local Development
-```bash
-# Instalar
-pnpm install
+lib/
+├── chatbot-engine.ts           -- Motor del chatbot
+├── types.ts                    -- Interfaces y enums
+├── utils.ts                    -- Utilidades
+├── services/                   -- Capa de servicios (7 archivos)
+└── supabase/                   -- Clientes server/client
 
-# Crear .env.local
-cp .env.example .env.local
-# Editar con tus valores de Supabase y Twilio
-
-# Ejecutar BD
-# Copiar scripts SQL a Supabase SQL Editor
-
-# Iniciar servidor
-pnpm dev
-
-# Acceder a http://localhost:3000
-```
-
-### 2. Testing
-```bash
-# Login
-Email: test@example.com
-Password: password
-
-# Ver conversaciones en
-http://localhost:3000/dashboard/conversations
-
-# Enviar WhatsApp de prueba a tu número de Twilio
-```
-
-### 3. Production (Vercel)
-```bash
-# Ver guía completa en DEPLOYMENT.md
-
-# Resumen rápido:
-1. Conectar GitHub a Vercel
-2. Configurar variables de entorno
-3. Ejecutar scripts SQL en Supabase
-4. Configurar webhook en Twilio
-5. Desplegar
+scripts/                        -- 10 migraciones SQL
 ```
 
 ---
@@ -290,28 +254,30 @@ http://localhost:3000/dashboard/conversations
 ## 🔐 Seguridad Implementada
 
 ### Autenticación
-- ✅ Supabase Auth integrada
+- ✅ Supabase Auth integrada con SSR
 - ✅ Email + contraseña
 - ✅ Sesiones seguras
 - ✅ Recovery de contraseña
 
 ### Autorización
 - ✅ Roles: Admin/Recepción
-- ✅ Middleware de rutas protegidas
-- ✅ Row Level Security (RLS)
+- ✅ Middleware de rutas protegidas (`/dashboard`, `/admin`)
+- ✅ Row Level Security (RLS) en todas las tablas
+- ✅ Chatbot: solo admin puede configurar
 - ✅ Políticas por tabla
 
 ### Validación Twilio
 - ✅ Firma HMAC-SHA1
 - ✅ Prevención de spoofing
 - ✅ Solo mensajes de Twilio
-- ✅ Logging de intentos fallidos
+- ✅ Opción de desactivar en desarrollo
 
 ### Validación de Datos
 - ✅ TypeScript (type safety)
-- ✅ Validación en formularios
+- ✅ React Hook Form + Zod (validación de formularios)
 - ✅ Sanitización de inputs
 - ✅ Constraints en BD
+- ✅ Normalización de teléfonos
 
 ---
 
@@ -319,40 +285,43 @@ http://localhost:3000/dashboard/conversations
 
 | Archivo | Propósito |
 |---------|-----------|
-| **README.md** | Descripción general del proyecto |
-| **GETTING_STARTED.md** | Guía rápida de inicio |
-| **TWILIO_SETUP.md** | Configuración paso a paso de Twilio |
+| **README.md** | Descripción general y referencia API |
+| **QUICK_START.md** | Setup en 5 minutos |
+| **GETTING_STARTED.md** | Guía detallada paso a paso |
+| **SETUP.md** | Configuración técnica del proyecto |
+| **TWILIO_SETUP.md** | Configuración de Twilio Conversations API |
 | **DEPLOYMENT.md** | Desplegar a Vercel |
-| **FEATURES.md** | Descripción detallada de características |
-| **CHANGELOG.md** | Cambios en esta sesión |
-| **IMPLEMENTATION_SUMMARY.md** | Este archivo |
-| **.env.example** | Variables de entorno necesarias |
+| **FEATURES.md** | Características detalladas del sistema |
+| **CHANGELOG.md** | Historial de cambios |
+| **CHATBOT_GUIDE.md** | Guía completa del chatbot |
+| **CHATBOT_IMPLEMENTATION.md** | Documentación técnica del chatbot |
+| **CHATBOT_COMPLETE_SUMMARY.md** | Resumen visual del chatbot |
+| **DOCS_INDEX.md** | Índice de documentación |
 
 ---
 
 ## ✅ Checklist de Implementación
 
-- ✅ Base de datos completa con RLS
-- ✅ Autenticación con roles
-- ✅ Gestión de pacientes
-- ✅ Solicitudes de citas con historial
-- ✅ Kanban board
-- ✅ Conversaciones WhatsApp
-- ✅ Interfaz tipo WhatsApp
-- ✅ Indicador de mensajes nuevos
-- ✅ Webhook Twilio seguro
-- ✅ Administración (especialidades, EPS, usuarios)
-- ✅ API Routes completas
-- ✅ TypeScript types
-- ✅ Documentación completa
-- ✅ Guías de setup
-- ✅ Guías de deployment
+- ✅ Base de datos completa con RLS (14+ tablas)
+- ✅ Autenticación con roles (admin/recepción)
+- ✅ Gestión de pacientes (con normalización de teléfonos)
+- ✅ Solicitudes de citas con historial automático
+- ✅ Kanban board con drag & drop
+- ✅ Conversaciones WhatsApp (interfaz tipo WhatsApp)
+- ✅ Estado de entrega de mensajes (delivery status)
+- ✅ Blue checks (Read Horizon)
+- ✅ Broadcasting en tiempo real (Supabase Realtime)
+- ✅ Chatbot automatizado (motor + panel admin)
+- ✅ Webhook Twilio seguro (HMAC-SHA1)
+- ✅ Administración (especialidades, EPS, usuarios, chatbot)
+- ✅ 40+ API Routes
+- ✅ TypeScript types completos
+- ✅ Documentación exhaustiva
+- ✅ Guías de setup y deployment
 
 ---
 
 ## 🎓 Próximas Mejoras (Futuro)
-
-Sugerencias para mejorar el sistema:
 
 **Corto Plazo**
 - [ ] Notificaciones push
@@ -361,13 +330,13 @@ Sugerencias para mejorar el sistema:
 
 **Mediano Plazo**
 - [ ] App móvil nativa
-- [ ] Búsqueda avanzada con Elasticsearch
-- [ ] Reportes analíticos
+- [ ] Reportes analíticos avanzados
 - [ ] Integración de calendarios
+- [ ] Soporte para archivos/imágenes en chats
 
 **Largo Plazo**
-- [ ] AI para sugerencias
-- [ ] Llamadas de voz
+- [ ] AI para sugerencias de respuesta
+- [ ] Integración con más canales (Telegram, etc.)
 - [ ] Video consultas
 - [ ] Marketplace de especialidades
 
@@ -375,10 +344,10 @@ Sugerencias para mejorar el sistema:
 
 ## 🤝 Soporte y Mantenimiento
 
-### Contactos Útiles
+### Recursos
 - **Vercel Support**: https://vercel.com/help
-- **Supabase Docs**: https://supabase.io/docs
-- **Twilio Docs**: https://www.twilio.com/docs
+- **Supabase Docs**: https://supabase.com/docs
+- **Twilio Conversations Docs**: https://www.twilio.com/docs/conversations
 - **Next.js Docs**: https://nextjs.org/docs
 
 ### Mantenimiento Regular
@@ -386,47 +355,8 @@ Sugerencias para mejorar el sistema:
 - Backups de Supabase
 - Updates de dependencias
 - Monitoreo de errores
+- Revisar logs de ejecución del chatbot
 
 ---
 
-## 📊 KPIs Recomendados
-
-Métricas para monitorear:
-
-```
-Dashboard Health:
-- Tiempo de respuesta API < 200ms
-- Uptime > 99.9%
-- Error rate < 0.1%
-
-Negocio:
-- Citas confirmadas / solicitudes recibidas
-- Tiempo promedio de respuesta
-- Conversaciones resueltas en primer contacto
-- Satisfacción del usuario
-```
-
----
-
-## 🎉 Conclusión
-
-Tu CRM de citas médicas está **100% completo y listo para producción**. 
-
-### Lo que tienes:
-✅ Sistema de gestión completo
-✅ WhatsApp integrado bidireccional
-✅ Interfaz profesional tipo WhatsApp
-✅ Seguridad enterprise
-✅ Escalabilidad automática
-✅ Documentación exhaustiva
-
-### Próximo paso:
-👉 **Ver DEPLOYMENT.md** para desplegar a producción
-
----
-
-**Desarrollado con ❤️ usando Next.js, React, Supabase y Twilio**
-
-**Fecha**: Marzo 2026
-**Versión**: 1.0
-**Status**: ✅ PRODUCCIÓN LISTA
+**Desarrollado con ❤️ usando Next.js 16, React 19, Supabase, Twilio Conversations API y shadcn/ui**

@@ -1,13 +1,13 @@
 # Guía de Deployment - Vercel
 
-Esta guía te ayudará a desplegar tu CRM de citas médicas en Vercel en pocos minutos.
+Esta guía te ayudará a desplegar tu CRM de citas médicas en Vercel.
 
 ## Requisitos Previos
 
 1. **Cuenta de Vercel**: https://vercel.com/signup
 2. **Repositorio en GitHub**: Tu código debe estar en un repo público o privado
 3. **Supabase Project**: Base de datos ya creada y configurada
-4. **Twilio Account**: Con WhatsApp Business configurado
+4. **Twilio Account**: Con Conversations Service y WhatsApp configurado
 5. **Git instalado**: Para versión control
 
 ## Paso 1: Preparar el Código
@@ -74,11 +74,15 @@ En la página de configuración del proyecto en Vercel:
 # Supabase
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-# Twilio WhatsApp
-TWILIO_ACCOUNT_SID=your-account-sid
+# Twilio
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxx
 TWILIO_AUTH_TOKEN=your-auth-token
+TWILIO_API_KEY=SKxxxxxxxxxx
+TWILIO_API_SECRET=your-api-secret
 TWILIO_WHATSAPP_NUMBER=+1234567890
+CONVERSATIONS_SERVICE_SID=ISxxxxxxxxxx
 
 # URL de la aplicación (para webhooks)
 NEXT_PUBLIC_APP_URL=https://citas-medicas.vercel.app
@@ -93,28 +97,40 @@ NEXT_PUBLIC_APP_URL=https://citas-medicas.vercel.app
 - Usa esta URL para reemplazar en `NEXT_PUBLIC_APP_URL`
 - Luego redeploy
 
-## Paso 4: Ejecutar Primera Migración de BD
+## Paso 4: Ejecutar Migraciones de BD
 
 Luego de desplegar por primera vez:
 
 1. Ve a tu proyecto en Supabase
 2. Abre el SQL Editor
-3. Ejecuta en orden:
-   - `scripts/01-init-database.sql`
-   - `scripts/02-seed-data.sql`
-   - `scripts/03-migration-add-columns.sql`
+3. Ejecuta en orden los 10 scripts:
+   - `scripts/01-init-database.sql` → Esquema base
+   - `scripts/02-seed-data.sql` → Datos de ejemplo
+   - `scripts/03-migration-add-columns.sql` → Columnas WhatsApp tracking
+   - `scripts/04-chatbot-schema.sql` → Tablas del chatbot
+   - `scripts/05-normalize-phone-unique.sql` → Normalización de teléfonos
+   - `scripts/06-broadcast-conversation-messages.sql` → Broadcasting en tiempo real
+   - `scripts/07-fix-chatbot-config-rls.sql` → RLS chatbot_config
+   - `scripts/08-fix-chatbot-steps-rls.sql` → RLS chatbot_steps
+   - `scripts/09-chatbot-add-message-delivery-status.sql` → Estado de entrega
+   - `scripts/10-conversations-api-migration.sql` → Integración Twilio Conversations API
 
-## Paso 5: Configurar Webhook de Twilio
+## Paso 5: Configurar Twilio Conversations Webhook
 
 1. Ve a https://console.twilio.com
-2. Messaging → WhatsApp (o Phone Numbers)
-3. Selecciona tu número verificado
-4. En "Webhook Settings" → "When a message arrives":
+2. Navigation → Conversations → Services
+3. Selecciona tu Conversations Service (o crea uno nuevo)
+4. Ve a Webhooks → Post-Event URL:
    ```
    https://citas-medicas-xxx.vercel.app/api/webhooks/twilio
    ```
-5. Método: POST
-6. Guarda
+5. Habilita los eventos:
+   - `onMessageAdded`
+   - `onDeliveryUpdated`
+6. En Service Settings → habilita **Read Status** para confirmaciones de lectura (blue checks)
+7. Guarda los cambios
+
+> **Nota**: NO uses `TWILIO_SKIP_SIGNATURE` en producción. Esa variable es solo para desarrollo.
 
 ## Paso 6: Desplegar
 
@@ -164,6 +180,15 @@ Para cada Pull Request, Vercel crea una URL de preview:
 2. Verifica que aparezca en `/dashboard/conversations`
 3. Responde desde el CRM
 4. Verifica que recibas el mensaje en WhatsApp
+5. Verifica que los ticks de entrega se actualicen (✓ → ✓✓ → ✓✓ azul)
+
+### 7.4 Prueba del Chatbot
+
+1. Configura un chatbot en `/dashboard/admin/chatbot`
+2. Actívalo
+3. Envía un mensaje por WhatsApp
+4. Verifica que el chatbot responda automáticamente
+5. Revisa los logs de ejecución en `chatbot_execution_logs`
 
 ## Solución de Problemas
 
@@ -185,14 +210,18 @@ Para cada Pull Request, Vercel crea una URL de preview:
 ### Webhook de Twilio No Funciona
 
 **Error**: Mensajes no aparecen en el CRM
-1. Verifica que la URL en Twilio sea exacta
-2. Revisa los logs en Vercel: Deployments → Logs
-3. Prueba el webhook con curl:
-   ```bash
-   curl -X POST https://tu-url/api/webhooks/twilio \
-     -d "Body=test&From=whatsapp:+1234567890"
-   ```
-4. Verifica que `TWILIO_AUTH_TOKEN` sea exacto
+1. Verifica que la Post-Event URL en Twilio Console → Conversations → Service sea correcta
+2. Verifica que los eventos `onMessageAdded` y `onDeliveryUpdated` estén habilitados
+3. Revisa los logs en Vercel: Deployments → Logs
+4. Verifica que `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, y `CONVERSATIONS_SERVICE_SID` sean correctos
+5. NO uses `TWILIO_SKIP_SIGNATURE` en producción
+
+### Blue Checks No Funcionan
+
+**Error**: Read receipts no se muestran
+1. Verifica que Read Status esté habilitado en el Conversations Service
+2. Verifica el endpoint `POST /api/conversations/[id]/read`
+3. Revisa que `TWILIO_API_KEY` y `TWILIO_API_SECRET` sean válidos
 
 ### Base de Datos Desconectada
 
@@ -202,23 +231,30 @@ Para cada Pull Request, Vercel crea una URL de preview:
 3. Verifica firewall/IP whitelist en Supabase
 4. Revisa que el ANON_KEY sea válido
 
+### Chatbot No Responde
+
+1. Verifica que el chatbot esté activo en `/dashboard/admin/chatbot`
+2. Revisa los logs en `chatbot_execution_logs`
+3. Verifica que los triggers coincidan con los mensajes enviados
+4. Revisa la consola de Vercel para errores del webhook
+
 ## Monitoreo Posterior al Deployment
 
-### 7.4 Configurar Alertas
+### Configurar Alertas
 
 En Vercel Dashboard:
 1. Settings → Integrations
 2. Conecta Slack (opcional)
 3. Recibe notificaciones de failed deployments
 
-### 7.5 Analytics
+### Analytics
 
 En Vercel Dashboard:
-1. Analytics → se ve el tráfico
+1. Analytics → tráfico de la aplicación
 2. Performance → velocidad de carga
-3. Errors → si hay excepciones
+3. Errors → excepciones
 
-### 7.6 Logs en Vercel
+### Logs
 
 ```
 Vercel Dashboard → Deployments → Logs
@@ -228,26 +264,25 @@ Ver logs en tiempo real de:
 - Requests HTTP
 - Errores de la aplicación
 - Funciones serverless
+- Webhooks de Twilio
+- Ejecuciones del chatbot
 
 ## Mejores Prácticas
 
-### 1. Versionado de Base de Datos
-```bash
-# Crea un script de backup
-scripts/backup-db.sh
-```
-
-### 2. Staging Environment
+### 1. Staging Environment
 - Crea rama `staging` en GitHub
 - Vercel crea automáticamente preview
 - Test en staging antes de production
 
-### 3. Monitoreo de Errores
+### 2. Monitoreo de Errores
 
 Considera agregar:
 - **Sentry**: Para reportar errores
-- **LogRocket**: Para debugging de sesiones
-- **Datadog**: Para monitoreo integral
+- **Vercel Analytics**: Ya incluido en las dependencias (@vercel/analytics)
+
+### 3. Backups
+- Supabase realiza backups automáticos
+- Revisa la política de retención de tu plan
 
 ### 4. Backups de Supabase
 

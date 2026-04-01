@@ -19,24 +19,36 @@ cp .env.example .env.local
 ### En tu proyecto de Supabase:
 
 1. Abre el **SQL Editor**
-2. Ejecuta los 3 scripts en orden:
-   - `scripts/01-init-database.sql`
-   - `scripts/02-seed-data.sql`
-   - `scripts/03-migration-add-columns.sql`
+2. Ejecuta los 10 scripts en orden:
+   - `scripts/01-init-database.sql` → Esquema base
+   - `scripts/02-seed-data.sql` → Datos de ejemplo
+   - `scripts/03-migration-add-columns.sql` → Columnas WhatsApp
+   - `scripts/04-chatbot-schema.sql` → Tablas del chatbot
+   - `scripts/05-normalize-phone-unique.sql` → Normalización de teléfonos
+   - `scripts/06-broadcast-conversation-messages.sql` → Broadcasting en tiempo real
+   - `scripts/07-fix-chatbot-config-rls.sql` → RLS chatbot_config
+   - `scripts/08-fix-chatbot-steps-rls.sql` → RLS chatbot_steps
+   - `scripts/09-chatbot-add-message-delivery-status.sql` → Estado de entrega
+   - `scripts/10-conversations-api-migration.sql` → Integración Twilio Conversations API
 
 3. Copia en `.env.local`:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=tu_url_de_supabase
 NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_anon_key
+SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
 ```
 
 ## 3️⃣ Configurar Twilio (1 min)
 
 En tu `.env.local`:
 ```env
-TWILIO_ACCOUNT_SID=tu_account_sid
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxx
 TWILIO_AUTH_TOKEN=tu_auth_token
+TWILIO_API_KEY=SKxxxxxxxxxx
+TWILIO_API_SECRET=tu_api_secret
 TWILIO_WHATSAPP_NUMBER=+1234567890
+CONVERSATIONS_SERVICE_SID=ISxxxxxxxxxx
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
 > 📌 **Nota**: Si aún no tienes Twilio, ver `TWILIO_SETUP.md` para setup completo
@@ -67,13 +79,16 @@ Password: password
 | **Solicitudes** | http://localhost:3000/dashboard/appointments |
 | **Kanban** | http://localhost:3000/dashboard/kanban |
 | **💬 WhatsApp** | http://localhost:3000/dashboard/conversations |
-| **Admin** | http://localhost:3000/dashboard/admin/specialties |
+| **Admin - Especialidades** | http://localhost:3000/dashboard/admin/specialties |
+| **Admin - EPS** | http://localhost:3000/dashboard/admin/eps |
+| **Admin - Usuarios** | http://localhost:3000/dashboard/admin/users |
+| **🤖 Chatbot** | http://localhost:3000/dashboard/admin/chatbot |
 
 ---
 
 ## 🆕 Interfaz WhatsApp
 
-La sección de **Conversaciones** ahora tiene interfaz tipo WhatsApp:
+La sección de **Conversaciones** tiene interfaz tipo WhatsApp:
 
 ```
 ┌──────────────────┬─────────────────────┐
@@ -82,14 +97,28 @@ La sección de **Conversaciones** ahora tiene interfaz tipo WhatsApp:
 │ 🟢 Juan García   │ Juan García         │
 │   "Hola..."      │ +57 3001234567      │
 │                  │                     │
-│ 🟢 María López   │ Conversación...     │
+│ 🟢 María López   │ ✓✓ Conversación... │
 │   "Necesito..." │                     │
 │                  │                     │
 │                  │ [Escribe mensaje]   │
 └──────────────────┴─────────────────────┘
 ```
 
-**Punto verde (🟢)** = Mensajes sin leer
+- **Punto verde (🟢)** = Mensajes sin leer
+- **✓** = Enviado | **✓✓** = Entregado | **✓✓ azul** = Leído
+
+---
+
+## 🤖 Chatbot Automatizado
+
+Configura flujos automáticos en **Dashboard → Admin → Chatbot**:
+
+1. Crea una configuración (nombre, mensajes, reintentos)
+2. Agrega pasos con triggers (palabra clave, mensaje recibido, etc.)
+3. Agrega acciones (enviar mensaje, crear cita, derivar a agente, etc.)
+4. Activa el chatbot y responderá automáticamente por WhatsApp
+
+Ver [CHATBOT_GUIDE.md](./CHATBOT_GUIDE.md) para la guía completa.
 
 ---
 
@@ -101,11 +130,12 @@ Para probar WhatsApp sin número real:
 # 1. Obtén tu webhook URL (en desarrollo con ngrok):
 ngrok http 3000
 
-# 2. Ve a Twilio Console
-# 3. Configura webhook en: https://xxxx.ngrok.io/api/webhooks/twilio
+# 2. Ve a Twilio Console → Conversations → Service → Webhooks
+# 3. Configura Post-Event URL: https://xxxx.ngrok.io/api/webhooks/twilio
+# 4. Habilita eventos: onMessageAdded, onDeliveryUpdated
 
-# 4. Envía mensaje de prueba desde Twilio Sandbox
-# 5. Debería aparecer en /dashboard/conversations
+# 5. Envía mensaje de prueba desde WhatsApp
+# 6. Debería aparecer en /dashboard/conversations
 ```
 
 ---
@@ -117,8 +147,12 @@ ngrok http 3000
 ├── /patients       → Gestión de pacientes
 ├── /appointments   → Solicitudes de citas
 ├── /kanban        → Tablero visual
-├── /conversations → 💬 WhatsApp
-└── /admin         → Configuración
+├── /conversations → 💬 WhatsApp (con delivery status y blue checks)
+└── /admin
+    ├── /specialties → Especialidades médicas
+    ├── /eps         → Aseguradoras
+    ├── /users       → Usuarios y roles
+    └── /chatbot     → 🤖 Configuración de chatbot
 ```
 
 ---

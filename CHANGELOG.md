@@ -2,7 +2,57 @@
 
 ## Cambios Recientes
 
-### Interfaz WhatsApp (Nueva)
+### Twilio Conversations API (Migración)
+- **Migración completa** de Twilio Messaging API a **Conversations API**
+- Token service con ChatGrant para SDK frontend (`POST /api/twilio/token`)
+- Resolución automática de Conversation SID (crea si no existe)
+- Gestión de participantes en conversaciones
+- Hook `useTwilioConversations` para inicialización del SDK client-side
+- Refresh automático de tokens (TTL: 1h)
+- **Script**: `scripts/10-conversations-api-migration.sql`
+
+### Estado de Entrega de Mensajes
+- Tracking de delivery status: `queued → sent → delivered → read`
+- Enum `message_delivery_status` en base de datos
+- Ticks visuales en la UI (✓ enviado, ✓✓ entregado, ✓✓ azul leído)
+- Webhook `onDeliveryUpdated` para actualizaciones automáticas
+- **Script**: `scripts/09-chatbot-add-message-delivery-status.sql`
+
+### Blue Checks (Confirmaciones de Lectura)
+- Implementación de Read Horizon de Twilio
+- Columna `message_index` en `conversation_messages`
+- Endpoint `POST /api/conversations/[id]/read` para avanzar Read Horizon
+- Blue checks visibles en WhatsApp cuando el staff lee mensajes
+
+### Broadcasting en Tiempo Real
+- Broadcasting de mensajes a clientes conectados vía Supabase Realtime
+- Actualización instantánea de la UI cuando llegan nuevos mensajes
+- **Script**: `scripts/06-broadcast-conversation-messages.sql`
+
+### Normalización de Teléfonos
+- Función `normalize_phone()` en PostgreSQL
+- Columnas normalizadas: `phone_number_normalized`, `whatsapp_number_normalized`
+- Triggers automáticos en insert/update
+- Índices únicos para prevenir duplicados
+- **Script**: `scripts/05-normalize-phone-unique.sql`
+
+### Chatbot Automatizado (Nuevo Módulo)
+- **Motor**: Clase `ChatbotEngine` en `lib/chatbot-engine.ts`
+  - 5 tipos de triggers: message_received, keyword, has_pending_appointment, new_patient, after_delay
+  - 8 tipos de acciones: send_message, create_appointment_request, send_reminder, collect_info, redirect_to_agent, update_conversation_status, send_confirmation, schedule_step
+  - Variables dinámicas ({{nombre}}, {{email}}, etc.)
+  - Contexto persistente por conversación
+  - Logging de ejecuciones
+- **Panel Admin**: 7 componentes en `components/admin/chatbot/`
+  - Lista de configuraciones con toggle activo/inactivo
+  - Editor de pasos con preview en tiempo real
+  - Constructor de acciones sin código
+  - Vista previa completa del flujo
+- **API**: 6 endpoints para CRUD completo
+- **BD**: 6 tablas nuevas con RLS
+- **Scripts**: `scripts/04-chatbot-schema.sql`, `scripts/07-fix-chatbot-config-rls.sql`, `scripts/08-fix-chatbot-steps-rls.sql`
+
+### Interfaz WhatsApp
 - **Componente**: `WhatsAppConversationsClient` en `components/conversations/whatsapp-conversations-client.tsx`
 - **Características**:
   - Lista de conversaciones a la izquierda (similar a WhatsApp)
@@ -13,135 +63,107 @@
 ### Indicador de Mensajes Nuevos
 - **Columna agregada**: `last_view_at` en tabla `conversations`
 - **Funcionamiento**:
-  - Punto verde (🟢 `Dot`) muestra cuando hay mensajes sin leer
+  - Punto verde (🟢) muestra cuando hay mensajes sin leer
   - `last_view_at` se actualiza cuando el usuario abre una conversación
   - `last_message_at` se actualiza cada vez que hay un nuevo mensaje
   - Si `last_message_at > last_view_at`, hay mensajes nuevos
+- **Script**: `scripts/03-migration-add-columns.sql`
 
-### Integración Twilio WhatsApp Mejorada
-- **Webhook Verificación**: Valida que los mensajes provengan de Twilio usando HMAC-SHA1
-- **Sincronización Bidireccional**:
-  - Recibe mensajes desde WhatsApp vía webhook (`POST /api/webhooks/twilio`)
-  - Envía respuestas a WhatsApp desde la aplicación (`POST /api/conversations/[id]/reply`)
-  - Guarda todos los mensajes localmente en Supabase
+### Webhook Twilio Mejorado
+- Validación de firma HMAC-SHA1
+- Soporte para Conversations API events (`onMessageAdded`, `onDeliveryUpdated`)
+- Procesamiento automático del chatbot al recibir mensajes
+- Broadcasting de mensajes a clientes conectados
+- Soporte legacy para Messaging API (backward compatibility)
+- Variable `TWILIO_SKIP_SIGNATURE=1` para desarrollo
 
-### Nuevos Endpoints API
+### Endpoints API Nuevos
 - `GET /api/conversations/[id]/messages` - Obtener mensajes de una conversación
 - `POST /api/conversations/[id]/view` - Marcar conversación como vista
-- `POST /api/conversations/[id]/reply` - Enviar respuesta (envía a Twilio y guarda localmente)
+- `POST /api/conversations/[id]/reply` - Enviar respuesta (Twilio + Supabase)
+- `POST /api/conversations/[id]/read` - Marcar como leído (Read Horizon)
+- `PATCH /api/conversations/[id]` - Actualizar conversación
+- `POST /api/twilio/token` - Generar Access Token
+- `GET/POST /api/chatbot` - CRUD configuraciones
+- `GET/PUT/PATCH/DELETE /api/chatbot/[id]` - Gestión de configuración
+- `PUT/DELETE /api/chatbot/steps/[stepId]` - Gestión de pasos
+- `PUT/DELETE /api/chatbot/actions/[actionId]` - Gestión de acciones
+- `PATCH /api/appointments/[id]/status` - Cambiar estado de solicitud
 
-### Archivos Actualizados
-- `middleware.ts` - Mejora de protección de rutas
-- `app/api/webhooks/twilio/route.ts` - Verificación de firma HMAC
-- `app/api/conversations/[id]/reply/route.ts` - Integración completa con Twilio
-- `.env.example` - Variables de Twilio correctas (sin prefijo `whatsapp:`)
-- `README.md` - Documentación completa sobre nuevas características
+### Archivos Nuevos
+- `lib/chatbot-engine.ts` - Motor del chatbot
+- `lib/services/chatbot.ts` - Servicio del chatbot
+- `hooks/use-twilio-conversations.ts` - Hook del SDK Twilio
+- `hooks/use-query.ts` - Hook para fetching de datos
+- `components/admin/chatbot/` - 7 componentes del panel de chatbot
+- `app/dashboard/admin/chatbot/` - Páginas del chatbot
+- `app/api/chatbot/` - Endpoints del chatbot
+- `app/api/twilio/token/` - Token service
+- `app/api/conversations/[id]/read/` - Read Horizon
+- `scripts/04-chatbot-schema.sql` → `scripts/10-conversations-api-migration.sql`
+- `CHATBOT_GUIDE.md` - Guía completa del chatbot
+- `CHATBOT_IMPLEMENTATION.md` - Documentación técnica del chatbot
+- `CHATBOT_COMPLETE_SUMMARY.md` - Resumen visual del chatbot
 
-### Nuevos Archivos
-- `TWILIO_SETUP.md` - Guía paso a paso para configurar Twilio WhatsApp
-- `scripts/03-migration-add-columns.sql` - Migración para agregar `last_message` y `last_view_at`
-- `CHANGELOG.md` - Este archivo
+### Base de Datos - Migraciones
+| Script | Descripción |
+|--------|-------------|
+| `03-migration-add-columns.sql` | `last_message`, `last_view_at`, índice de no leídos |
+| `04-chatbot-schema.sql` | 6 tablas del chatbot con RLS y triggers |
+| `05-normalize-phone-unique.sql` | Función `normalize_phone()`, columnas y triggers |
+| `06-broadcast-conversation-messages.sql` | Broadcasting Supabase Realtime |
+| `07-fix-chatbot-config-rls.sql` | Ajustes RLS para chatbot_config |
+| `08-fix-chatbot-steps-rls.sql` | Ajustes RLS para chatbot_steps |
+| `09-chatbot-add-message-delivery-status.sql` | Enum `message_delivery_status` |
+| `10-conversations-api-migration.sql` | `conversation_sid`, `message_index` |
 
-### Base de Datos
-**Script de Migración** (`scripts/03-migration-add-columns.sql`):
-```sql
--- Agrega columnas si no existen
-ALTER TABLE conversations ADD COLUMN last_message text;
-ALTER TABLE conversations ADD COLUMN last_view_at timestamp with time zone;
-
--- Crea índices para optimizar búsquedas de mensajes sin leer
-CREATE INDEX idx_conversations_unread
-  ON conversations(last_message_at, last_view_at)
-  WHERE last_message_at IS NOT NULL AND (last_view_at IS NULL OR last_message_at > last_view_at);
-```
-
-## Cómo Usar la Nueva Interfaz WhatsApp
-
-1. **Acceder a Conversaciones**:
-   - Ve a `/dashboard/conversations`
-   - Verás la lista de chats a la izquierda
-
-2. **Identificar Mensajes Nuevos**:
-   - Busca un **punto verde** (🟢) junto a la conversación
-   - Esto indica que hay mensajes sin leer
-
-3. **Leer un Chat**:
-   - Haz clic en una conversación en la lista
-   - El chat se abrirá a la derecha
-   - El punto verde desaparecerá automáticamente (se marca como visto)
-
-4. **Responder**:
-   - Escribe tu mensaje en el campo de texto
-   - Haz clic en el botón Enviar (o Ctrl+Enter)
-   - El mensaje se enviará a WhatsApp automáticamente
-
-## Configuración de Twilio
-
-**Variables de Entorno Requeridas**:
+### Variables de Entorno Nuevas
 ```env
-TWILIO_ACCOUNT_SID=your-account-sid
-TWILIO_AUTH_TOKEN=your-auth-token
-TWILIO_WHATSAPP_NUMBER=+1234567890
+SUPABASE_SERVICE_ROLE_KEY=...     # Para operaciones admin del chatbot
+TWILIO_API_KEY=SKxxxxxxxxxx       # Para generar Access Tokens
+TWILIO_API_SECRET=...             # Para generar Access Tokens
+CONVERSATIONS_SERVICE_SID=IS...   # Conversations Service de Twilio
+NEXT_PUBLIC_APP_URL=...           # URL de la aplicación
+TWILIO_SKIP_SIGNATURE=1           # Solo desarrollo - omitir validación
 ```
-
-**Importante**: 
-- `TWILIO_WHATSAPP_NUMBER` debe ser solo el número, SIN el prefijo `whatsapp:`
-- El webhook se configura automáticamente en `https://tu-dominio.com/api/webhooks/twilio`
-
-Ver [TWILIO_SETUP.md](./TWILIO_SETUP.md) para instrucciones completas.
 
 ## Orden de Instalación
 
 1. Crear base de datos en Supabase
-2. Ejecutar `scripts/01-init-database.sql` (crear tablas)
-3. Ejecutar `scripts/02-seed-data.sql` (datos de ejemplo)
-4. Ejecutar `scripts/03-migration-add-columns.sql` (agregar nuevas columnas)
-5. Configurar variables de entorno
-6. Configurar webhook de Twilio
+2. Ejecutar scripts SQL en orden (01 → 10) en Supabase SQL Editor
+3. Configurar todas las variables de entorno
+4. Crear Conversations Service en Twilio Console
+5. Configurar Post-Event Webhook en Twilio
+6. Habilitar eventos: `onMessageAdded`, `onDeliveryUpdated`
+7. Habilitar Read Status en el Conversations Service
 
-## Cambios de Estructura de Datos
-
-### Tabla `conversations`
-```sql
--- Columnas nuevas:
-ALTER TABLE conversations ADD COLUMN last_message text;
-ALTER TABLE conversations ADD COLUMN last_view_at timestamp with time zone;
-
--- Descripción:
--- last_message: Texto del último mensaje recibido
--- last_view_at: Timestamp cuando un staff último vio esta conversación
-```
-
-### Índices Nuevos
-```sql
-CREATE INDEX idx_conversations_unread
-  ON conversations(last_message_at, last_view_at)
-  WHERE last_message_at IS NOT NULL AND (last_view_at IS NULL OR last_message_at > last_view_at);
-```
-
-## Funcionalidades
+## Funcionalidades Completas
 
 ✅ Interfaz tipo WhatsApp
 ✅ Indicador de mensajes nuevos (punto verde)
-✅ Sincronización bidireccional con Twilio
+✅ Estado de entrega de mensajes (ticks)
+✅ Blue checks (confirmaciones de lectura)
+✅ Sincronización bidireccional con Twilio Conversations API
+✅ Broadcasting en tiempo real con Supabase Realtime
+✅ Normalización de teléfonos
+✅ Chatbot automatizado con motor configurable
+✅ Panel admin del chatbot con preview
+✅ Variables dinámicas en mensajes del chatbot
+✅ Logging de ejecución del chatbot
 ✅ Búsqueda en conversaciones
 ✅ Responsive design
-✅ Verificación de seguridad (HMAC)
+✅ Verificación de seguridad (HMAC-SHA1)
 ✅ Guardado automático de mensajes
 ✅ Historial completo de conversaciones
-
-## Próximos Pasos Opcionales
-
-- [ ] Agregar reacción de emojis a mensajes
-- [ ] Implementar notificaciones push
-- [ ] Agregar búsqueda dentro de un chat
-- [ ] Exportar conversaciones a PDF
-- [ ] Integración con más canales (Telegram, etc.)
-- [ ] Soporte para archivos/imágenes en chats
 
 ## Soporte y Documentación
 
 - **README.md** - Documentación general del proyecto
-- **TWILIO_SETUP.md** - Configuración de Twilio WhatsApp
-- **GETTING_STARTED.md** - Guía de inicio rápido
-- **API Docs** - Ver sección de endpoints en README.md
+- **TWILIO_SETUP.md** - Configuración de Twilio Conversations API
+- **CHATBOT_GUIDE.md** - Guía completa del chatbot
+- **CHATBOT_IMPLEMENTATION.md** - Documentación técnica del chatbot
+- **CHATBOT_COMPLETE_SUMMARY.md** - Resumen visual del chatbot
+- **GETTING_STARTED.md** - Guía de inicio
+- **DEPLOYMENT.md** - Guía de deployment a Vercel
+- **FEATURES.md** - Características del sistema
+- **DOCS_INDEX.md** - Índice de toda la documentación

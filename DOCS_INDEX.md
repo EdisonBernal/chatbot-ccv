@@ -33,19 +33,19 @@ Bienvenido a la documentación del CRM de Citas Médicas. Aquí encontrarás tod
 | **[GETTING_STARTED.md](./GETTING_STARTED.md)** | Guía paso a paso |
 | **[.env.example](./.env.example)** | Variables de entorno |
 
-### Chatbot Automático (NUEVO!)
+### Chatbot Automático
 | Documento | Contenido |
 |-----------|-----------|
 | **[CHATBOT_COMPLETE_SUMMARY.md](./CHATBOT_COMPLETE_SUMMARY.md)** | Resumen visual y pasos rápidos ⭐ |
 | **[CHATBOT_GUIDE.md](./CHATBOT_GUIDE.md)** | Guía completa para usuarios |
 | **[CHATBOT_IMPLEMENTATION.md](./CHATBOT_IMPLEMENTATION.md)** | Documentación técnica detallada |
 
-### Twilio WhatsApp
+### Twilio Conversations API (WhatsApp)
 | Documento | Contenido |
-|-----------|-----------|
-| **[TWILIO_SETUP.md](./TWILIO_SETUP.md)** | Configuración completa de Twilio |
+|-----------|----------|
+| **[TWILIO_SETUP.md](./TWILIO_SETUP.md)** | Configuración Twilio Conversations API |
 | **[README.md](./README.md#conversaciones)** | Endpoints de conversaciones |
-| **[FEATURES.md](./FEATURES.md#5-conversaciones-whatsapp)** | Features de WhatsApp |
+| **[FEATURES.md](./FEATURES.md#5-conversaciones-whatsapp)** | Features de WhatsApp + delivery status |
 
 ### Deployment y Producción
 | Documento | Contenido |
@@ -133,20 +133,20 @@ Bienvenido a la documentación del CRM de Citas Médicas. Aquí encontrarás tod
 - Gestión de pacientes
 - Solicitudes de citas
 - Kanban board
-- WhatsApp
+- WhatsApp (delivery status, blue checks)
+- Chatbot automatizado
 - Administración
 - Seguridad
-- Reportes
 
 ### [TWILIO_SETUP.md](./TWILIO_SETUP.md) 📱
-**Para**: Configurar WhatsApp completamente
+**Para**: Configurar Twilio Conversations API con WhatsApp
 **Tiempo**: 15-20 minutos setup
 **Contenido**:
 - Crear cuenta Twilio
-- Solicitar WhatsApp Business
-- Obtener número
-- Configurar webhook
-- Testing local
+- Crear Conversations Service
+- API Key/Secret y ChatGrant
+- Configurar webhooks
+- Delivery status y Read Horizon
 - Solución de problemas
 
 ### [DEPLOYMENT.md](./DEPLOYMENT.md) 🚀
@@ -164,10 +164,10 @@ Bienvenido a la documentación del CRM de Citas Médicas. Aquí encontrarás tod
 **Para**: Desarrolladores que quieren entender la arquitectura
 **Tiempo**: 20-30 minutos lectura
 **Contenido**:
-- Estadísticas del proyecto
+- Estadísticas del proyecto (40+ endpoints, 14+ tablas)
 - Características implementadas
-- Arquitectura técnica
-- Nueva UI de WhatsApp
+- Arquitectura técnica (Conversations API, ChatbotEngine)
+- UI WhatsApp con delivery status
 - Seguridad
 - Estructura de archivos
 - Checklist completo
@@ -175,11 +175,12 @@ Bienvenido a la documentación del CRM de Citas Médicas. Aquí encontrarás tod
 ### [CHANGELOG.md](./CHANGELOG.md)
 **Para**: Ver qué cambió recientemente
 **Contenido**:
-- Interfaz WhatsApp nueva
-- Indicador de mensajes
-- Webhook mejorado
-- Nuevos endpoints
-- Cambios en archivos
+- Migración a Twilio Conversations API
+- Delivery status y blue checks
+- Chatbot automatizado
+- Broadcasting en tiempo real
+- Normalización de teléfonos
+- 10 migraciones SQL
 
 ### [.env.example](./.env.example)
 **Para**: Variables de entorno
@@ -215,6 +216,11 @@ Bienvenido a la documentación del CRM de Citas Médicas. Aquí encontrarás tod
 - Documento: **[FEATURES.md#5-conversaciones-whatsapp](./FEATURES.md#5-conversaciones-whatsapp-tipo-whatsapp-ui)**
 - Setup: **[TWILIO_SETUP.md](./TWILIO_SETUP.md)**
 - API: `GET/POST /api/conversations`
+
+### 🤖 Chatbot Automatizado
+- Ubicación: `/dashboard/admin/chatbot`
+- Documento: **[CHATBOT_GUIDE.md](./CHATBOT_GUIDE.md)**
+- Técnico: **[CHATBOT_IMPLEMENTATION.md](./CHATBOT_IMPLEMENTATION.md)**
 
 ### ⚙️ Administración
 - Ubicación: `/dashboard/admin`
@@ -253,7 +259,7 @@ Arquitectura técnica | **[IMPLEMENTATION_SUMMARY.md](./IMPLEMENTATION_SUMMARY.m
 ## 📞 Recursos Externos
 
 - **Vercel Docs**: https://vercel.com/docs
-- **Supabase Docs**: https://supabase.io/docs
+- **Supabase Docs**: https://supabase.com/docs
 - **Twilio Docs**: https://www.twilio.com/docs
 - **Next.js Docs**: https://nextjs.org/docs
 - **React Docs**: https://react.dev

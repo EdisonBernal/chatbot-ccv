@@ -346,7 +346,7 @@ DOCUMENTACIÓN:       3 guías completas
    └─ En: Supabase SQL Editor
 
 2. VERIFICAR BACKEND
-   └─ npm run dev
+   └─ pnpm dev
    └─ Checa http://localhost:3000/dashboard/admin/chatbot
 
 3. CREAR PRIMER CHATBOT
@@ -397,7 +397,7 @@ ESTE ARCHIVO
 ═══════════════════════════════════════════════════════════════════════════════════════
 
 □ Base de datos migrada (scripts/04-chatbot-schema.sql)
-□ Servidor iniciado (npm run dev)
+□ Servidor iniciado (pnpm dev)
 □ Panel accesible (Dashboard → Chatbot)
 □ Primera configuración creada
 □ Paso con trigger agregado
