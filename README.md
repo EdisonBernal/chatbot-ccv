@@ -1,4 +1,4 @@
-# CRM de Citas Médicas - Clínica Dr. García
+# CRM de Citas Médicas - Clínica Crear Visión
 
 Sistema completo de gestión de citas médicas con integración WhatsApp, control de roles, y gestión de solicitudes de citas.
 
