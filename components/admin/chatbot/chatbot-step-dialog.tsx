@@ -31,6 +31,7 @@ interface ChatbotStepDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   step: ChatbotStep | null
+  allSteps: ChatbotStep[]
   onSave: (data: any) => Promise<void>
   loading: boolean
 }
@@ -39,6 +40,7 @@ export function ChatbotStepDialog({
   open,
   onOpenChange,
   step,
+  allSteps,
   onSave,
   loading,
 }: ChatbotStepDialogProps) {
@@ -49,6 +51,8 @@ export function ChatbotStepDialog({
     trigger_keywords: [] as string[],
     trigger_delay_minutes: undefined as number | undefined,
     condition_requires_pending_apt: false,
+    goto_step_name: '' as string,
+    keyword_routes: {} as Record<string, string>,
     is_active: true,
   })
   const [keywordInput, setKeywordInput] = useState('')
@@ -63,6 +67,8 @@ export function ChatbotStepDialog({
         trigger_keywords: step.trigger_keywords || [],
         trigger_delay_minutes: step.trigger_delay_minutes || undefined,
         condition_requires_pending_apt: step.condition_requires_pending_apt,
+        goto_step_name: step.goto_step_name || '',
+        keyword_routes: step.keyword_routes || {},
         is_active: step.is_active,
       })
     } else {
@@ -73,6 +79,8 @@ export function ChatbotStepDialog({
         trigger_keywords: [],
         trigger_delay_minutes: undefined,
         condition_requires_pending_apt: false,
+        goto_step_name: '',
+        keyword_routes: {},
         is_active: true,
       })
     }
@@ -108,14 +116,28 @@ export function ChatbotStepDialog({
       console.log('[ChatbotStepDialog] handleSave adding pending keyword to payload', pendingKeyword)
     }
 
+    // Clean up keyword_routes: remove empty values and keywords not in the list
+    const cleanRoutes: Record<string, string> = {}
+    if (formData.trigger_type === 'keyword') {
+      for (const kw of keywords) {
+        const route = formData.keyword_routes[kw]
+        if (route) cleanRoutes[kw] = route
+      }
+    }
+
     const payload = {
       ...formData,
       trigger_keywords: formData.trigger_type === 'keyword' ? keywords : [],
+      goto_step_name: formData.goto_step_name || null,
+      keyword_routes: Object.keys(cleanRoutes).length > 0 ? cleanRoutes : null,
     }
 
     console.log('[ChatbotStepDialog] handleSave payload', payload)
     await onSave(payload)
   }
+
+  // Available steps for routing (exclude current step)
+  const routeTargetSteps = allSteps.filter(s => !step || s.id !== step.id)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -128,8 +150,9 @@ export function ChatbotStepDialog({
         </DialogHeader>
 
         <Tabs defaultValue="config" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="config">Configuración</TabsTrigger>
+            <TabsTrigger value="routing">Enrutamiento</TabsTrigger>
             <TabsTrigger value="actions">Acciones</TabsTrigger>
           </TabsList>
 
@@ -259,10 +282,80 @@ export function ChatbotStepDialog({
             </div>
           </TabsContent>
 
+          <TabsContent value="routing" className="space-y-4">
+            <div>
+              <Label htmlFor="goto">Siguiente paso por defecto</Label>
+              <Select
+                value={formData.goto_step_name || '_none_'}
+                onValueChange={(val) =>
+                  setFormData({ ...formData, goto_step_name: val === '_none_' ? '' : val })
+                }
+              >
+                <SelectTrigger id="goto" disabled={loading}>
+                  <SelectValue placeholder="Secuencial (siguiente paso)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none_">Secuencial (siguiente paso)</SelectItem>
+                  {routeTargetSteps.map((s) => (
+                    <SelectItem key={s.id} value={s.name}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Si no se configuran rutas por palabra clave, el chatbot irá a este paso
+              </p>
+            </div>
+
+            {formData.trigger_type === 'keyword' && (formData.trigger_keywords || []).length > 0 && (
+              <div>
+                <Label>Rutas por Palabra Clave</Label>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Configura a qué paso ir según la opción que elija el usuario. Si se deja en "Por defecto", usará el siguiente paso configurado arriba.
+                </p>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {(formData.trigger_keywords || []).map((kw) => (
+                    <div key={kw} className="flex items-center gap-2">
+                      <span className="text-sm min-w-24 truncate shrink-0" title={kw}>
+                        {kw}
+                      </span>
+                      <Select
+                        value={formData.keyword_routes[kw] || '_default_'}
+                        onValueChange={(val) => {
+                          const newRoutes = { ...formData.keyword_routes }
+                          if (val === '_default_') {
+                            delete newRoutes[kw]
+                          } else {
+                            newRoutes[kw] = val
+                          }
+                          setFormData({ ...formData, keyword_routes: newRoutes })
+                        }}
+                      >
+                        <SelectTrigger className="flex-1" disabled={loading}>
+                          <SelectValue placeholder="Por defecto" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="_default_">→ Por defecto</SelectItem>
+                          {routeTargetSteps.map((s) => (
+                            <SelectItem key={s.id} value={s.name}>
+                              → {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+
           <TabsContent value="actions" className="space-y-4">
             <div>
               <p className="text-sm text-muted-foreground mb-4">
-                Las acciones se ejecutan de forma secuencial cuando este paso se activa
+                Las acciones de <strong>envío</strong> (Enviar Mensaje) se ejecutan al <em>entrar</em> al paso.
+                Las acciones de <strong>lógica</strong> (Recopilar Info, Derivar a Agente) se ejecutan cuando el usuario responde.
               </p>
               {step ? (
                 <Button

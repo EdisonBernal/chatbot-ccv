@@ -184,6 +184,7 @@ export function ChatbotEditorClient({ config, initialSteps }: ChatbotEditorClien
         open={showStepDialog}
         onOpenChange={setShowStepDialog}
         step={selectedStep}
+        allSteps={steps}
         onSave={handleSaveStep}
         loading={loading}
       />

@@ -4,10 +4,15 @@ import {
   getChatbotSteps,
   getChatbotContext,
   setChatbotContext,
+  getChatbotContextTimestamp,
+  clearChatbotSessionState,
   logChatbotExecution,
 } from '@/lib/services/chatbot'
 import { sendMessageWithTwilio, getConversationById } from '@/lib/services/conversations'
 import type { ChatbotConfig, ChatbotStep, ChatbotStepAction } from '@/lib/types'
+
+/** Session expires after 30 minutes of inactivity */
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000
 
 export interface ChatbotProcessingOptions {
   conversationId: string
@@ -37,6 +42,127 @@ export class ChatbotEngine {
   }
 
   /**
+   * Build a numbered list of valid options for a keyword step.
+   * E.g. "1. Agendar cita\n2. Ver horarios\n3. Hablar con agente"
+   */
+  private buildOptionsText(step: ChatbotStep): string {
+    if (!step.trigger_keywords || step.trigger_keywords.length === 0) return ''
+    return step.trigger_keywords
+      .map((kw, i) => `${i + 1}. ${kw}`)
+      .join('\n')
+  }
+
+  /**
+   * Determines whether an action should execute on entry (navigation to step)
+   * vs on response (when user message matches trigger).
+   */
+  private isEntryAction(actionType: string): boolean {
+    return actionType === 'send_message' || actionType === 'send_reminder' || actionType === 'send_confirmation'
+  }
+
+  /**
+   * Execute only the "entry" actions of a step (send_message, send_reminder, send_confirmation).
+   * Called when the engine navigates to a new step.
+   */
+  private async executeEntryActions(
+    step: ChatbotStep,
+    config: ChatbotConfig,
+  ): Promise<void> {
+    for (const action of step.actions || []) {
+      if (!action.is_active) continue
+      if (!this.isEntryAction(action.action_type)) continue
+
+      await this.executeAction(action, config, '')
+
+      await logChatbotExecution(
+        {
+          conversation_id: this.conversationId,
+          chatbot_config_id: config.id,
+          step_id: step.id,
+          action_id: action.id,
+          trigger_type: step.trigger_type,
+          action_type: action.action_type,
+          success: true,
+        },
+        this.supabase
+      )
+    }
+  }
+
+  /**
+   * Execute only the "response" actions (collect_info, redirect_to_agent, create_appointment_request, etc.)
+   * Called when the user's message matches the step's trigger.
+   */
+  private async executeResponseActions(
+    step: ChatbotStep,
+    config: ChatbotConfig,
+    userMessage: string,
+  ): Promise<void> {
+    for (const action of step.actions || []) {
+      if (!action.is_active) continue
+      if (this.isEntryAction(action.action_type)) continue
+
+      await this.executeAction(action, config, userMessage)
+
+      await logChatbotExecution(
+        {
+          conversation_id: this.conversationId,
+          chatbot_config_id: config.id,
+          step_id: step.id,
+          action_id: action.id,
+          trigger_type: step.trigger_type,
+          action_type: action.action_type,
+          success: true,
+        },
+        this.supabase
+      )
+    }
+  }
+
+  /**
+   * Determine the next step using routing:
+   * 1. keyword_routes (per-keyword branching)
+   * 2. goto_step_name (default route)
+   * 3. Sequential (next step_number)
+   */
+  private resolveNextStep(
+    currentStep: ChatbotStep,
+    steps: ChatbotStep[],
+    matchedKeyword: string | null,
+  ): ChatbotStep | undefined {
+    // 1. Per-keyword routing
+    if (matchedKeyword && currentStep.keyword_routes) {
+      const targetName = currentStep.keyword_routes[matchedKeyword]
+      if (targetName) {
+        const target = steps.find(s => s.name === targetName && s.is_active)
+        if (target) return target
+      }
+    }
+
+    // 2. Default goto
+    if (currentStep.goto_step_name) {
+      const target = steps.find(s => s.name === currentStep.goto_step_name && s.is_active)
+      if (target) return target
+    }
+
+    // 3. Sequential fallback
+    return steps
+      .filter(s => s.is_active)
+      .find(s => s.step_number > currentStep.step_number)
+  }
+
+  /**
+   * Navigate to a step: execute its entry actions and save as current.
+   */
+  private async navigateToStep(
+    step: ChatbotStep,
+    config: ChatbotConfig,
+  ): Promise<void> {
+    await this.executeEntryActions(step, config)
+    await setChatbotContext(this.conversationId, 'chatbot_current_step_id', step.id, this.supabase)
+  }
+
+  /**
    * Procesa un mensaje y ejecuta el chatbot correspondiente
    */
   async processMessage(message: string, config: ChatbotConfig): Promise<void> {
@@ -56,22 +182,73 @@ export class ChatbotEngine {
         return
       }
 
-      const currentStepId = this.userContext['chatbot_current_step_id']
+      // ── Session timeout check ──────────────────────────────────
+      let currentStepId = this.userContext['chatbot_current_step_id']
+
+      if (currentStepId) {
+        const lastUpdated = await getChatbotContextTimestamp(
+          this.conversationId, 'chatbot_current_step_id', this.supabase
+        )
+        const elapsed = lastUpdated
+          ? Date.now() - new Date(lastUpdated).getTime()
+          : Infinity
+
+        if (elapsed > SESSION_TIMEOUT_MS) {
+          console.log('[ChatbotEngine] Session expired after', Math.round(elapsed / 60000), 'min — clearing')
+          await clearChatbotSessionState(this.conversationId, this.supabase)
+          this.userContext = {}
+          currentStepId = undefined as any
+        }
+      }
+
+      // ── Try to continue current step (mid-flow) ────────────────
       let selectedStep: ChatbotStep | undefined
+      let matchedKeyword: string | null = null
 
       if (currentStepId) {
         const currentStep = steps.find(step => step.id === currentStepId && step.is_active)
         if (currentStep) {
           const shouldExecute = this.checkTrigger(currentStep, message, conversation)
           if (shouldExecute) {
+            // Reset retry counter on valid input
+            await setChatbotContext(this.conversationId, 'chatbot_retry_count', '0', this.supabase)
+            // Save meaningful response (keyword text, not the number typed)
+            if (currentStep.trigger_type === 'keyword') {
+              matchedKeyword = this.getKeywordMatch(currentStep, message)
+              if (matchedKeyword) {
+                const safeKey = `response_${currentStep.name.replace(/\s+/g, '_').toLowerCase()}`
+                await setChatbotContext(this.conversationId, safeKey, matchedKeyword, this.supabase)
+              }
+            } else if (currentStep.trigger_type === 'message_received' && message.trim()) {
+              const safeKey = `response_${currentStep.name.replace(/\s+/g, '_').toLowerCase()}`
+              await setChatbotContext(this.conversationId, safeKey, message.trim(), this.supabase)
+            }
             selectedStep = currentStep
           } else if (currentStep.trigger_type === 'keyword') {
-            await this.sendMessage('Opción no válida. Por favor intenta de nuevo.', message)
+            // ── Invalid input: track retries ──────────────────────
+            const retryCount = parseInt(this.userContext['chatbot_retry_count'] || '0', 10) + 1
+            await setChatbotContext(this.conversationId, 'chatbot_retry_count', String(retryCount), this.supabase)
+
+            if (retryCount >= (config.max_retries || 3)) {
+              // Too many retries → escalate to agent
+              console.log('[ChatbotEngine] Max retries reached (' + retryCount + ') — escalating')
+              await clearChatbotSessionState(this.conversationId, this.supabase)
+              await this.redirectToAgent(config.escalation_message)
+              return
+            }
+
+            // Show the valid options so the user knows what to type
+            const options = this.buildOptionsText(currentStep)
+            const hint = options
+              ? `Opción no válida. Por favor elige una opción:\n\n${options}`
+              : 'Opción no válida. Por favor intenta de nuevo.'
+            await this.sendMessage(hint, message)
             return
           }
         }
       }
 
+      // ── No current step or step didn't match — scan all steps ───
       if (!selectedStep) {
         const matchingSteps: ChatbotStep[] = []
 
@@ -83,44 +260,45 @@ export class ChatbotEngine {
 
         selectedStep = matchingSteps.find(step => step.trigger_type !== 'message_received')
           || matchingSteps.find(step => step.trigger_type === 'message_received')
+
+        // Get matched keyword for the scanned step
+        if (selectedStep?.trigger_type === 'keyword') {
+          matchedKeyword = this.getKeywordMatch(selectedStep, message)
+          if (matchedKeyword) {
+            const safeKey = `response_${selectedStep.name.replace(/\s+/g, '_').toLowerCase()}`
+            await setChatbotContext(this.conversationId, safeKey, matchedKeyword, this.supabase)
+          }
+        } else if (selectedStep?.trigger_type === 'message_received' && message.trim()) {
+          const safeKey = `response_${selectedStep.name.replace(/\s+/g, '_').toLowerCase()}`
+          await setChatbotContext(this.conversationId, safeKey, message.trim(), this.supabase)
+        }
       }
 
       if (selectedStep) {
-        console.log('[ChatbotEngine] selected step', selectedStep.id, 'trigger', selectedStep.trigger_type)
+        console.log('[ChatbotEngine] selected step', selectedStep.id, selectedStep.name, 'trigger', selectedStep.trigger_type)
+        // Reset retry counter when entering a new step
+        await setChatbotContext(this.conversationId, 'chatbot_retry_count', '0', this.supabase)
 
-        for (const action of selectedStep.actions || []) {
-          if (!action.is_active) continue
+        // Execute response actions (collect_info, redirect_to_agent, etc.)
+        await this.executeResponseActions(selectedStep, config, message)
 
-          await this.executeAction(action, config, message)
+        // Reload context after response actions (collect_info may have updated it)
+        this.userContext = await getChatbotContext(this.conversationId, this.supabase)
 
-          await logChatbotExecution(
-            {
-              conversation_id: this.conversationId,
-              chatbot_config_id: config.id,
-              step_id: selectedStep.id,
-              action_id: action.id,
-              trigger_type: selectedStep.trigger_type,
-              action_type: action.action_type,
-              success: true,
-            },
-            this.supabase
-          )
-        }
-
-        // Avanzar al siguiente paso en orden (en flujo secuencial)
-        const nextStep = steps
-          .filter(step => step.is_active)
-          .find(step => step.step_number > selectedStep.step_number)
+        // ── Route to next step ───────────────────────────────
+        const nextStep = this.resolveNextStep(selectedStep, steps, matchedKeyword)
 
         if (nextStep) {
-          await setChatbotContext(this.conversationId, 'chatbot_current_step_id', nextStep.id, this.supabase)
+          console.log('[ChatbotEngine] navigating to', nextStep.name, '(step_number', nextStep.step_number, ')')
+          await this.navigateToStep(nextStep, config)
         } else {
-          await setChatbotContext(this.conversationId, 'chatbot_current_step_id', '', this.supabase)
+          // Flow completed — clear session state but keep collected responses
+          await clearChatbotSessionState(this.conversationId, this.supabase)
         }
         return
       }
 
-      // Si no coincidió ningún paso, enviar mensaje por defecto
+      // ── No step matched — send fallback ─────────────────────────
       if (config.fallback_message) {
         await this.sendMessage(config.fallback_message, message || '')
         await logChatbotExecution(
@@ -226,7 +404,8 @@ export class ChatbotEngine {
       case 'collect_info':
         await this.collectInfo(
           action.info_field_name || '',
-          action.info_field_label || ''
+          action.info_field_label || '',
+          userMessage
         )
         break
 
@@ -296,11 +475,12 @@ export class ChatbotEngine {
   /**
    * Recopila información del usuario
    */
-  private async collectInfo(fieldName: string, fieldLabel: string): Promise<void> {
+  private async collectInfo(fieldName: string, _fieldLabel: string, userMessage: string): Promise<void> {
     try {
-      // Guardar en contexto para usar después
-      await setChatbotContext(this.conversationId, fieldName, fieldLabel, this.supabase)
-      this.userContext[fieldName] = fieldLabel
+      // Guardar la respuesta real del usuario, no la etiqueta del campo
+      const value = userMessage.trim() || _fieldLabel
+      await setChatbotContext(this.conversationId, fieldName, value, this.supabase)
+      this.userContext[fieldName] = value
     } catch (error) {
       console.error('[ChatbotEngine] Error collecting info:', error)
     }

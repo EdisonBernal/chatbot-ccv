@@ -92,6 +92,22 @@ export function ChatbotStepCard({
         </CardContent>
       )}
 
+      {(step.goto_step_name || (step.keyword_routes && Object.keys(step.keyword_routes).length > 0)) && (
+        <CardContent className="py-3 border-t space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">Enrutamiento:</p>
+          {step.goto_step_name && (
+            <p className="text-xs text-muted-foreground">
+              → Por defecto: <span className="text-primary font-medium">{step.goto_step_name}</span>
+            </p>
+          )}
+          {step.keyword_routes && Object.entries(step.keyword_routes).map(([kw, target]) => (
+            <p key={kw} className="text-xs text-muted-foreground">
+              "{kw}" → <span className="text-primary font-medium">{target}</span>
+            </p>
+          ))}
+        </CardContent>
+      )}
+
       {!step.is_active && (
         <CardContent className="py-2 border-t bg-muted/50">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">

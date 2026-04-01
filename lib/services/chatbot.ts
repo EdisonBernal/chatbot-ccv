@@ -118,6 +118,8 @@ export async function createChatbotStep(
     trigger_type: formData.trigger_type,
     trigger_delay_minutes: formData.trigger_delay_minutes ?? null,
     condition_requires_pending_apt: formData.condition_requires_pending_apt,
+    goto_step_name: formData.goto_step_name ?? null,
+    keyword_routes: formData.keyword_routes ?? null,
     is_active: formData.is_active,
   }
 
@@ -159,6 +161,14 @@ export async function updateChatbotStep(
     payload.trigger_keywords = Array.isArray(formData.trigger_keywords)
       ? formData.trigger_keywords
       : []
+  }
+
+  // Ensure routing fields are included
+  if ('goto_step_name' in formData) {
+    payload.goto_step_name = formData.goto_step_name ?? null
+  }
+  if ('keyword_routes' in formData) {
+    payload.keyword_routes = formData.keyword_routes ?? null
   }
 
   const supabase = await createClient()
@@ -350,10 +360,66 @@ export async function setChatbotContext(
       conversation_id: conversationId,
       context_key: key,
       context_value: value,
+      updated_at: new Date().toISOString(),
     },
     {
       onConflict: 'conversation_id,context_key',
     }
   )
+  if (error) throw error
+}
+
+/**
+ * Get the updated_at timestamp of a specific context key.
+ */
+export async function getChatbotContextTimestamp(
+  conversationId: string,
+  key: string,
+  supabaseClient?: any
+): Promise<string | null> {
+  const supabase = supabaseClient || (await createClient())
+  const { data, error } = await supabase
+    .from('chatbot_user_context')
+    .select('updated_at')
+    .eq('conversation_id', conversationId)
+    .eq('context_key', key)
+    .maybeSingle()
+  if (error || !data) return null
+  return data.updated_at || null
+}
+
+/**
+ * Clear the entire chatbot session for a conversation so the user
+ * starts fresh on the next message.
+ */
+export async function clearChatbotSession(
+  conversationId: string,
+  supabaseClient?: any
+): Promise<void> {
+  const supabase = supabaseClient || (await createClient())
+  const { error } = await supabase
+    .from('chatbot_user_context')
+    .delete()
+    .eq('conversation_id', conversationId)
+  if (error) throw error
+}
+
+/** Internal session keys that should be cleared on flow reset but NOT user responses */
+const SESSION_KEYS = ['chatbot_current_step_id', 'chatbot_retry_count']
+
+/**
+ * Clear only the internal session state (current step, retry count).
+ * Preserves user-collected responses (response_*, collect_info fields, etc.).
+ */
+export async function clearChatbotSessionState(
+  conversationId: string,
+  supabaseClient?: any
+): Promise<void> {
+  const supabase = supabaseClient || (await createClient())
+  const { error } = await supabase
+    .from('chatbot_user_context')
+    .delete()
+    .eq('conversation_id', conversationId)
+    .in('context_key', SESSION_KEYS)
   if (error) throw error
 }

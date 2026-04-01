@@ -271,6 +271,8 @@ export interface ChatbotStep {
   trigger_keywords: string[] | null
   trigger_delay_minutes: number | null
   condition_requires_pending_apt: boolean
+  goto_step_name: string | null
+  keyword_routes: Record<string, string> | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -335,6 +337,8 @@ export interface ChatbotStepFormData {
   trigger_keywords: string[] | null
   trigger_delay_minutes: number | null
   condition_requires_pending_apt: boolean
+  goto_step_name: string | null
+  keyword_routes: Record<string, string> | null
   is_active: boolean
 }
 
