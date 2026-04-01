@@ -49,16 +49,36 @@ export async function updateUser(
 
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const supabase = await createClient()
-  const { data, error } = await supabase.rpc('get_dashboard_metrics')
-  if (error) throw error
-  const row = data?.[0]
+  const today = new Date().toISOString().split('T')[0]
+
+  const [
+    newConvs,
+    inAttentionConvs,
+    closedConvs,
+    totalConvs,
+    convsToday,
+    msgsToday,
+    botMsgsToday,
+    appointmentsToday,
+  ] = await Promise.all([
+    supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('status', 'nueva'),
+    supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('status', 'en_atencion'),
+    supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('status', 'cerrada'),
+    supabase.from('conversations').select('*', { count: 'exact', head: true }),
+    supabase.from('conversations').select('*', { count: 'exact', head: true }).gte('created_at', today),
+    supabase.from('conversation_messages').select('*', { count: 'exact', head: true }).gte('created_at', today),
+    supabase.from('conversation_messages').select('*', { count: 'exact', head: true }).eq('sender_type', 'staff').is('sender_id', null).gte('created_at', today),
+    supabase.from('appointment_requests').select('*', { count: 'exact', head: true }).gte('created_at', today),
+  ])
+
   return {
-    pending_requests: Number(row?.pending_requests ?? 0),
-    reviewing_requests: Number(row?.reviewing_requests ?? 0),
-    confirmed_requests: Number(row?.confirmed_requests ?? 0),
-    cancelled_requests: Number(row?.cancelled_requests ?? 0),
-    total_today: Number(row?.total_today ?? 0),
-    new_conversations: Number(row?.new_conversations ?? 0),
-    in_attention_conversations: Number(row?.in_attention_conversations ?? 0),
+    new_conversations: newConvs.count ?? 0,
+    in_attention_conversations: inAttentionConvs.count ?? 0,
+    closed_conversations: closedConvs.count ?? 0,
+    total_conversations: totalConvs.count ?? 0,
+    conversations_today: convsToday.count ?? 0,
+    messages_today: msgsToday.count ?? 0,
+    bot_messages_today: botMsgsToday.count ?? 0,
+    appointments_today: appointmentsToday.count ?? 0,
   }
 }

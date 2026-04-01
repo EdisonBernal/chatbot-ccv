@@ -129,13 +129,14 @@ export interface SystemActivityLog {
 }
 
 export interface DashboardMetrics {
-  pending_requests: number
-  reviewing_requests: number
-  confirmed_requests: number
-  cancelled_requests: number
-  total_today: number
   new_conversations: number
   in_attention_conversations: number
+  closed_conversations: number
+  total_conversations: number
+  conversations_today: number
+  messages_today: number
+  bot_messages_today: number
+  appointments_today: number
 }
 
 // =====================================================

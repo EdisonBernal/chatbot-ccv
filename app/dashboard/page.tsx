@@ -1,23 +1,21 @@
 import { getDashboardMetrics, getCurrentUser } from '@/lib/services/users'
-import { getAppointments } from '@/lib/services/appointments'
 import { getConversations } from '@/lib/services/conversations'
 import { MetricCard } from '@/components/dashboard/metric-card'
-import { RecentAppointments } from '@/components/dashboard/recent-appointments'
 import { RecentConversations } from '@/components/dashboard/recent-conversations'
 import {
   Clock,
-  CheckCircle,
-  XCircle,
-  Search,
-  CalendarDays,
-  MessageSquare,
+  CheckCircle2,
   Headphones,
+  MessagesSquare,
+  MessageSquare,
+  MessageCircle,
+  Bot,
+  CalendarPlus,
 } from 'lucide-react'
 
 export default async function DashboardPage() {
-  const [metrics, recentAppointments, recentConversations, user] = await Promise.all([
+  const [metrics, recentConversations, user] = await Promise.all([
     getDashboardMetrics(),
-    getAppointments(),
     getConversations(),
     getCurrentUser(),
   ])
@@ -27,82 +25,94 @@ export default async function DashboardPage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
         <p className="text-sm text-muted-foreground">
-          Bienvenido{user ? `, ${user.full_name}` : ''}. Resumen del estado actual.
+          Bienvenido{user ? `, ${user.full_name}` : ''}. Resumen del chatbot y conversaciones.
         </p>
       </div>
 
-      {/* Primary metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Pendientes"
-          value={metrics.pending_requests}
-          icon={Clock}
-          colorClass="text-amber-600"
-          bgClass="bg-amber-50"
-          description="solicitudes por atender"
-        />
-        <MetricCard
-          title="En revisión"
-          value={metrics.reviewing_requests}
-          icon={Search}
-          colorClass="text-blue-600"
-          bgClass="bg-blue-50"
-          description="solicitudes en proceso"
-        />
-        <MetricCard
-          title="Confirmadas"
-          value={metrics.confirmed_requests}
-          icon={CheckCircle}
-          colorClass="text-emerald-600"
-          bgClass="bg-emerald-50"
-          description="citas confirmadas"
-        />
-        <MetricCard
-          title="Canceladas"
-          value={metrics.cancelled_requests}
-          icon={XCircle}
-          colorClass="text-red-600"
-          bgClass="bg-red-50"
-          description="solicitudes canceladas"
-        />
+      {/* Estado de conversaciones */}
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground mb-3">Estado de conversaciones</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            title="Sin atender"
+            value={metrics.new_conversations}
+            icon={Clock}
+            colorClass="text-amber-600"
+            bgClass="bg-amber-50"
+            description="esperan respuesta"
+          />
+          <MetricCard
+            title="Escaladas a agente"
+            value={metrics.in_attention_conversations}
+            icon={Headphones}
+            colorClass="text-blue-600"
+            bgClass="bg-blue-50"
+            description="atendidas por humano"
+          />
+          <MetricCard
+            title="Resueltas"
+            value={metrics.closed_conversations}
+            icon={CheckCircle2}
+            colorClass="text-emerald-600"
+            bgClass="bg-emerald-50"
+            description="conversaciones cerradas"
+          />
+          <MetricCard
+            title="Total"
+            value={metrics.total_conversations}
+            icon={MessagesSquare}
+            colorClass="text-primary"
+            bgClass="bg-primary/10"
+            description="conversaciones totales"
+          />
+        </div>
       </div>
 
-      {/* Secondary metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <MetricCard
-          title="Solicitudes hoy"
-          value={metrics.total_today}
-          icon={CalendarDays}
-          colorClass="text-primary"
-          bgClass="bg-primary/10"
-          description="creadas hoy"
-          size="sm"
-        />
-        <MetricCard
-          title="Conversaciones nuevas"
-          value={metrics.new_conversations}
-          icon={MessageSquare}
-          colorClass="text-blue-600"
-          bgClass="bg-blue-50"
-          description="sin atender"
-          size="sm"
-        />
-        <MetricCard
-          title="En atención"
-          value={metrics.in_attention_conversations}
-          icon={Headphones}
-          colorClass="text-amber-600"
-          bgClass="bg-amber-50"
-          description="conversaciones activas"
-          size="sm"
-        />
+      {/* Actividad de hoy */}
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground mb-3">Actividad de hoy</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            title="Conversaciones"
+            value={metrics.conversations_today}
+            icon={MessageSquare}
+            colorClass="text-violet-600"
+            bgClass="bg-violet-50"
+            description="iniciadas hoy"
+            size="sm"
+          />
+          <MetricCard
+            title="Mensajes"
+            value={metrics.messages_today}
+            icon={MessageCircle}
+            colorClass="text-blue-600"
+            bgClass="bg-blue-50"
+            description="intercambiados hoy"
+            size="sm"
+          />
+          <MetricCard
+            title="Mensajes del bot"
+            value={metrics.bot_messages_today}
+            icon={Bot}
+            colorClass="text-emerald-600"
+            bgClass="bg-emerald-50"
+            description="respuestas automáticas"
+            size="sm"
+          />
+          <MetricCard
+            title="Citas creadas"
+            value={metrics.appointments_today}
+            icon={CalendarPlus}
+            colorClass="text-amber-600"
+            bgClass="bg-amber-50"
+            description="solicitudes hoy"
+            size="sm"
+          />
+        </div>
       </div>
 
-      {/* Recent data */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <RecentAppointments appointments={recentAppointments.slice(0, 6)} />
-        <RecentConversations conversations={recentConversations.slice(0, 6)} />
-      </div>
+      {/* Conversaciones recientes */}
+      <RecentConversations conversations={recentConversations.slice(0, 8)} />
     </div>
   )
 }
