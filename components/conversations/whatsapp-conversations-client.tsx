@@ -737,11 +737,11 @@ export function WhatsAppConversationsClient({
                     <ClipboardList className="w-4 h-4" />
                   </Button>
                 </SheetTrigger>
-                <SheetContent className="w-80 sm:w-96">
+                <SheetContent className="w-80 sm:w-96 flex flex-col">
                   <SheetHeader>
                     <SheetTitle>Datos recopilados</SheetTitle>
                   </SheetHeader>
-                  <div className="mt-4 space-y-3">
+                  <div className="mt-4 space-y-3 flex-1 overflow-y-auto">
                     {isLoadingContext ? (
                       <div className="flex justify-center py-8">
                         <Spinner className="w-5 h-5" />

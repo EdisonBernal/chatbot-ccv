@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import type { ChatbotActionType } from '@/lib/types'
+import { useState, useEffect } from 'react'
+import type { ChatbotActionType, ChatbotStepAction } from '@/lib/types'
 import {
   Dialog,
   DialogContent,
@@ -30,9 +30,11 @@ interface ChatbotActionDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   stepId: string
+  action?: ChatbotStepAction | null
+  onSaved?: () => void
 }
 
-export function ChatbotActionDialog({ open, onOpenChange, stepId }: ChatbotActionDialogProps) {
+export function ChatbotActionDialog({ open, onOpenChange, stepId, action, onSaved }: ChatbotActionDialogProps) {
   const [formData, setFormData] = useState({
     action_type: 'send_message' as ChatbotActionType,
     message_template: '',
@@ -46,15 +48,53 @@ export function ChatbotActionDialog({ open, onOpenChange, stepId }: ChatbotActio
   const [loading, setLoading] = useState(false)
   const { data: specialties } = useQuery<any[]>('/api/specialties')
 
+  const isEditing = !!action
+
+  useEffect(() => {
+    if (action) {
+      setFormData({
+        action_type: action.action_type,
+        message_template: action.message_template || '',
+        appointment_specialty_id: action.appointment_specialty_id || '',
+        info_field_name: action.info_field_name || '',
+        info_field_label: action.info_field_label || '',
+        delay_seconds: action.delay_seconds || 0,
+        redirect_to_agent: action.redirect_to_agent,
+        is_active: action.is_active,
+      })
+    } else {
+      setFormData({
+        action_type: 'send_message',
+        message_template: '',
+        appointment_specialty_id: '',
+        info_field_name: '',
+        info_field_label: '',
+        delay_seconds: 0,
+        redirect_to_agent: false,
+        is_active: true,
+      })
+    }
+  }, [action, open])
+
   const handleSave = async () => {
     try {
       setLoading(true)
-      const res = await fetch(`/api/chatbot/steps/${stepId}/actions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      })
-      if (!res.ok) throw new Error('Failed to create action')
+      if (isEditing) {
+        const res = await fetch(`/api/chatbot/actions/${action.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData),
+        })
+        if (!res.ok) throw new Error('Failed to update action')
+      } else {
+        const res = await fetch(`/api/chatbot/steps/${stepId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData),
+        })
+        if (!res.ok) throw new Error('Failed to create action')
+      }
+      onSaved?.()
       onOpenChange(false)
     } catch (error) {
       alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -67,7 +107,7 @@ export function ChatbotActionDialog({ open, onOpenChange, stepId }: ChatbotActio
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Agregar Acción</DialogTitle>
+          <DialogTitle>{isEditing ? 'Editar Acción' : 'Agregar Acción'}</DialogTitle>
           <DialogDescription>
             Configura qué acción ejecutará el chatbot en este paso
           </DialogDescription>
@@ -203,7 +243,7 @@ export function ChatbotActionDialog({ open, onOpenChange, stepId }: ChatbotActio
           </Button>
           <Button onClick={handleSave} disabled={loading}>
             {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Crear Acción
+            {isEditing ? 'Actualizar' : 'Crear Acción'}
           </Button>
         </DialogFooter>
       </DialogContent>

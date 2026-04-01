@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import type { ChatbotStep, ChatbotTriggerType } from '@/lib/types'
+import { useState, useEffect, useCallback } from 'react'
+import type { ChatbotStep, ChatbotStepAction, ChatbotTriggerType } from '@/lib/types'
 import {
   Dialog,
   DialogContent,
@@ -23,8 +23,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Loader2, Plus, Trash2 } from 'lucide-react'
-import { CHATBOT_TRIGGER_LABELS } from '@/lib/types'
+import { Loader2, Plus, Trash2, Edit, GripVertical } from 'lucide-react'
+import { CHATBOT_TRIGGER_LABELS, CHATBOT_ACTION_LABELS } from '@/lib/types'
 import { ChatbotActionDialog } from './chatbot-action-dialog'
 
 interface ChatbotStepDialogProps {
@@ -57,6 +57,36 @@ export function ChatbotStepDialog({
   })
   const [keywordInput, setKeywordInput] = useState('')
   const [showActionDialog, setShowActionDialog] = useState(false)
+  const [editingAction, setEditingAction] = useState<ChatbotStepAction | null>(null)
+  const [actions, setActions] = useState<ChatbotStepAction[]>([])
+  const [actionsLoading, setActionsLoading] = useState(false)
+
+  const fetchActions = useCallback(async (stepId: string) => {
+    setActionsLoading(true)
+    try {
+      const res = await fetch(`/api/chatbot/steps/${stepId}/actions`)
+      if (res.ok) {
+        const data = await res.json()
+        setActions(data)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setActionsLoading(false)
+    }
+  }, [])
+
+  const handleDeleteAction = async (actionId: string) => {
+    if (!confirm('¿Eliminar esta acción?')) return
+    try {
+      const res = await fetch(`/api/chatbot/actions/${actionId}`, { method: 'DELETE' })
+      if (res.ok) {
+        setActions(prev => prev.filter(a => a.id !== actionId))
+      }
+    } catch {
+      alert('Error al eliminar la acción')
+    }
+  }
 
   useEffect(() => {
     if (step) {
@@ -71,6 +101,12 @@ export function ChatbotStepDialog({
         keyword_routes: step.keyword_routes || {},
         is_active: step.is_active,
       })
+      // Load actions from the step object or fetch from API
+      if (step.actions && step.actions.length > 0) {
+        setActions(step.actions)
+      } else {
+        fetchActions(step.id)
+      }
     } else {
       setFormData({
         name: '',
@@ -83,9 +119,11 @@ export function ChatbotStepDialog({
         keyword_routes: {},
         is_active: true,
       })
+      setActions([])
     }
     setKeywordInput('')
-  }, [step, open])
+    setEditingAction(null)
+  }, [step, open, fetchActions])
 
   const handleAddKeyword = () => {
     if (keywordInput.trim()) {
@@ -357,15 +395,83 @@ export function ChatbotStepDialog({
                 Las acciones de <strong>envío</strong> (Enviar Mensaje) se ejecutan al <em>entrar</em> al paso.
                 Las acciones de <strong>lógica</strong> (Recopilar Info, Derivar a Agente) se ejecutan cuando el usuario responde.
               </p>
+
               {step ? (
-                <Button
-                  onClick={() => setShowActionDialog(true)}
-                  className="gap-2 w-full"
-                  disabled={loading}
-                >
-                  <Plus className="w-4 h-4" />
-                  Agregar Acción
-                </Button>
+                <>
+                  {actionsLoading ? (
+                    <div className="flex justify-center py-4">
+                      <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : actions.length > 0 ? (
+                    <div className="space-y-2 mb-4">
+                      {actions
+                        .sort((a, b) => a.action_number - b.action_number)
+                        .map((act, idx) => (
+                        <div
+                          key={act.id}
+                          className="flex items-center gap-2 rounded-lg border p-3 bg-muted/30"
+                        >
+                          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-semibold shrink-0">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium">
+                              {CHATBOT_ACTION_LABELS[act.action_type] || act.action_type}
+                            </p>
+                            {act.message_template && (
+                              <p className="text-xs text-muted-foreground truncate mt-0.5">
+                                {act.message_template.substring(0, 60)}{act.message_template.length > 60 ? '...' : ''}
+                              </p>
+                            )}
+                            {act.action_type === 'collect_info' && act.info_field_name && (
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                Campo: <span className="font-medium">{act.info_field_name}</span>
+                              </p>
+                            )}
+                            {!act.is_active && (
+                              <p className="text-xs text-amber-500 mt-0.5">Desactivada</p>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => {
+                              setEditingAction(act)
+                              setShowActionDialog(true)
+                            }}
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => handleDeleteAction(act.id)}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-4 mb-4">
+                      No hay acciones configuradas
+                    </p>
+                  )}
+
+                  <Button
+                    onClick={() => {
+                      setEditingAction(null)
+                      setShowActionDialog(true)
+                    }}
+                    className="gap-2 w-full"
+                    disabled={loading}
+                  >
+                    <Plus className="w-4 h-4" />
+                    Agregar Acción
+                  </Button>
+                </>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   Crea el paso primero para agregar acciones
@@ -391,6 +497,8 @@ export function ChatbotStepDialog({
           open={showActionDialog}
           onOpenChange={setShowActionDialog}
           stepId={step.id}
+          action={editingAction}
+          onSaved={() => fetchActions(step.id)}
         />
       )}
     </Dialog>
