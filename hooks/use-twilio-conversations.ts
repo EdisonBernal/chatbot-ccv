@@ -22,15 +22,38 @@ interface UseTwilioConversationsResult {
 }
 
 /**
- * React hook that initializes the Twilio Conversations client-side SDK.
- * - Sends the DB `conversationId` to /api/twilio/token which resolves
- *   a valid Twilio SID (handling stale/missing SIDs automatically).
- * - Connects to the Conversations service using the resolved SID.
- * - On init + on every new `messageAdded` event, calls
- *   `conversation.advanceLastReadMessageIndex(message.index)`
- *   to advance the Read Horizon → triggers blue check marks on WhatsApp.
- * - Listens for `updated` events on messages to propagate delivery status changes.
+ * Helper: mark all messages as read in a Twilio Conversation using multiple
+ * SDK methods to maximise the chance the read report reaches Twilio's backend
+ * and is relayed to WhatsApp (blue checks).
+ *
+ * The SDK batches read reports every ~10 s, so a single call may not transmit
+ * immediately.  We call both `setAllMessagesRead()` AND `advanceLastReadMessageIndex()`
+ * with the explicit last index.
  */
+async function markAllRead(conv: Conversation, label: string): Promise<void> {
+  try {
+    // 1) setAllMessagesRead — preferred, handles index internally
+    const unread = await conv.setAllMessagesRead()
+    console.log(`[useTwilioConversations] setAllMessagesRead() [${label}] unread=`, unread)
+  } catch (e) {
+    console.warn(`[useTwilioConversations] setAllMessagesRead error [${label}]:`, e)
+  }
+
+  try {
+    // 2) Also call advanceLastReadMessageIndex with the explicit last index.
+    //    This is a belt-and-suspenders approach — if one method gets batched
+    //    away, the other may still transmit.
+    const paginator = await conv.getMessages(1)
+    const lastMsg = paginator.items[0]
+    if (lastMsg && typeof lastMsg.index === 'number') {
+      await conv.advanceLastReadMessageIndex(lastMsg.index)
+      console.log(`[useTwilioConversations] advanceLastReadMessageIndex(${lastMsg.index}) [${label}]`)
+    }
+  } catch (e) {
+    console.warn(`[useTwilioConversations] advanceLastReadMessageIndex error [${label}]:`, e)
+  }
+}
+
 export function useTwilioConversations({
   conversationId,
   enabled = true,
@@ -42,6 +65,11 @@ export function useTwilioConversations({
   const conversationRef = useRef<Conversation | null>(null)
   const onMessageUpdatedRef = useRef(onMessageUpdated)
   onMessageUpdatedRef.current = onMessageUpdated
+  // Flag: if advanceReadHorizon() is called before the SDK is connected,
+  // we store this intent so the init code can fulfil it once connected.
+  const pendingReadRef = useRef(false)
+  // Delayed-retry timer for setAllMessagesRead — cleared on cleanup
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
@@ -149,37 +177,48 @@ export function useTwilioConversations({
         setIsConnected(true)
         setError(null)
 
-        // Advance Read Horizon to the last message index on open
-        try {
-          const paginator = await conv.getMessages(1)
-          const lastMsg = paginator.items[0]
-          if (lastMsg && typeof lastMsg.index === 'number') {
-            await conv.advanceLastReadMessageIndex(lastMsg.index)
-            console.log('[useTwilioConversations] Read Horizon advanced on open to index', lastMsg.index)
-          }
-        } catch (readErr) {
-          console.warn('[useTwilioConversations] advanceLastReadMessageIndex error on init:', readErr)
-        }
+        console.log('[useTwilioConversations] Conversation status:', conv.status,
+          '| connectionState:', client!.connectionState)
 
-        // Listen for new incoming messages → advance Read Horizon to the new message index
-        conv.on('messageAdded', async (message) => {
-          if (typeof message.index === 'number') {
-            try {
-              await conv.advanceLastReadMessageIndex(message.index)
-            } catch (readErr) {
-              console.warn('[useTwilioConversations] advanceLastReadMessageIndex error on messageAdded:', readErr)
-            }
+        // ── Diagnostic listeners ─────────────────────────────────────────
+        client!.on('connectionStateChanged', (state: string) => {
+          console.log('[useTwilioConversations] connectionStateChanged →', state)
+        })
+
+        conv.on('participantUpdated', ({ participant, updateReasons }: any) => {
+          if (updateReasons.includes('lastReadMessageIndex')) {
+            console.log('[useTwilioConversations] participantUpdated:',
+              participant.identity,
+              '| lastReadMessageIndex:', participant.lastReadMessageIndex)
           }
         })
 
-        // Listen for message delivery updates → propagate to UI
-        conv.on('messageUpdated', ({ message, updateReasons }) => {
+        // ── Mark all messages as read (init + belt-and-suspenders) ───────
+        pendingReadRef.current = false
+        await markAllRead(conv, 'init')
+
+        // Schedule a follow-up after 12 s — the SDK batches read reports
+        // every ~10 s, so this guarantees at least one full batch cycle
+        // with the read report in-flight.
+        retryTimerRef.current = setTimeout(async () => {
+          if (!cancelled && conversationRef.current) {
+            await markAllRead(conversationRef.current, 'delayed-retry')
+          }
+        }, 12_000)
+
+        // ── Conversation event listeners ─────────────────────────────────
+        // New incoming message → mark all as read immediately
+        conv.on('messageAdded', async () => {
+          await markAllRead(conv, 'messageAdded')
+        })
+
+        // Delivery updates → propagate to UI
+        conv.on('messageUpdated', ({ message, updateReasons }: any) => {
           if (
             updateReasons.includes('deliveryReceipt') &&
             message.sid &&
             onMessageUpdatedRef.current
           ) {
-            // Derive aggregate status from the receipt fields (each is "none" | "some" | "all")
             const receipt = message.aggregatedDeliveryReceipt
             let status = 'sent'
             if (receipt) {
@@ -206,6 +245,10 @@ export function useTwilioConversations({
     return () => {
       cancelled = true
       conversationRef.current = null
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
       if (clientRef.current) {
         clientRef.current.shutdown()
         clientRef.current = null
@@ -215,19 +258,15 @@ export function useTwilioConversations({
   }, [conversationId, enabled, fetchToken, refreshToken])
 
   // Manual advance Read Horizon (e.g. when user opens conversation or scrolls to bottom)
+  // If the SDK is not connected yet, sets a pending flag so init will call it.
   const advanceReadHorizon = useCallback(async () => {
     const conv = conversationRef.current
-    if (!conv) return
-
-    try {
-      const paginator = await conv.getMessages(1)
-      const lastMsg = paginator.items[0]
-      if (lastMsg && typeof lastMsg.index === 'number') {
-        await conv.advanceLastReadMessageIndex(lastMsg.index)
-      }
-    } catch (err) {
-      console.warn('[useTwilioConversations] advanceReadHorizon error:', err)
+    if (!conv) {
+      pendingReadRef.current = true
+      console.log('[useTwilioConversations] advanceReadHorizon: SDK not connected, queued as pending')
+      return
     }
+    await markAllRead(conv, 'manual')
   }, [])
 
   return { isConnected, error, advanceReadHorizon }

@@ -17,6 +17,23 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Spinner } from '@/components/ui/spinner'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet'
+import {
   Search,
   Send,
   Phone,
@@ -24,6 +41,13 @@ import {
   MoreVertical,
   Dot,
   ArrowLeft,
+  UserCircle,
+  RefreshCw,
+  XCircle,
+  ClipboardList,
+  Copy,
+  Check,
+  LogOut,
 } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -72,6 +96,9 @@ export function WhatsAppConversationsClient({
   const [reply, setReply] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [contextData, setContextData] = useState<Record<string, string>>({})
+  const [isLoadingContext, setIsLoadingContext] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<HTMLDivElement>(null)
@@ -427,6 +454,80 @@ export function WhatsAppConversationsClient({
 
   // Note: polling removed — conversation previews are updated via Realtime subscription.
 
+  // Handler: cambiar estado de conversación
+  const handleStatusChange = async (newStatus: string, label: string) => {
+    if (!selectedConversation) return
+    const convId = selectedConversation.id
+    try {
+      const res = await fetch(`/api/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      })
+      if (res.ok) {
+        setSelectedConversation((prev) => prev ? { ...prev, status: newStatus as any } : prev)
+        setConversations((prev) =>
+          prev.map((c) => c.id === convId ? { ...c, status: newStatus as any } : c)
+        )
+        toast.success(`Estado cambiado a "${label}"`)
+      } else {
+        toast.error('Error al cambiar el estado')
+      }
+    } catch {
+      toast.error('Error al cambiar el estado')
+    }
+  }
+
+  // Handler: cerrar conversación
+  const handleCloseConversation = async () => {
+    if (!selectedConversation) return
+    const convId = selectedConversation.id
+    try {
+      const res = await fetch(`/api/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'cerrada' }),
+      })
+      if (res.ok) {
+        setSelectedConversation((prev) => prev ? { ...prev, status: 'cerrada' } : prev)
+        setConversations((prev) =>
+          prev.map((c) => c.id === convId ? { ...c, status: 'cerrada' as any } : c)
+        )
+        // Limpiar sesión del chatbot para que reinicie con bienvenida
+        await fetch(`/api/conversations/${convId}/context`, { method: 'DELETE' }).catch(() => {})
+        toast.success('Conversación cerrada')
+      } else {
+        toast.error('Error al cerrar la conversación')
+      }
+    } catch {
+      toast.error('Error al cerrar la conversación')
+    }
+  }
+
+  // Cargar datos recopilados del chatbot
+  const loadContextData = async () => {
+    if (!selectedConversation) return
+    setIsLoadingContext(true)
+    try {
+      const res = await fetch(`/api/conversations/${selectedConversation.id}/context`)
+      if (res.ok) {
+        const data = await res.json()
+        setContextData(data)
+      }
+    } catch {
+      toast.error('Error al cargar datos')
+    } finally {
+      setIsLoadingContext(false)
+    }
+  }
+
+  // Copiar dato al portapapeles
+  const handleCopyValue = (key: string, value: string) => {
+    navigator.clipboard.writeText(value)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 2000)
+  }
+
   // Filtrar conversaciones por búsqueda
   const filtered = conversations.filter((c) =>
     c.patient?.full_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -630,9 +731,106 @@ export function WhatsAppConversationsClient({
               >
                 {CONVERSATION_STATUS_LABELS[selectedConversation.status]}
               </Badge>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
-                <MoreVertical className="w-4 h-4" />
-              </Button>
+              <Sheet>
+                <SheetTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" title="Datos recopilados" onClick={loadContextData}>
+                    <ClipboardList className="w-4 h-4" />
+                  </Button>
+                </SheetTrigger>
+                <SheetContent className="w-80 sm:w-96">
+                  <SheetHeader>
+                    <SheetTitle>Datos recopilados</SheetTitle>
+                  </SheetHeader>
+                  <div className="mt-4 space-y-3">
+                    {isLoadingContext ? (
+                      <div className="flex justify-center py-8">
+                        <Spinner className="w-5 h-5" />
+                      </div>
+                    ) : Object.keys(contextData).length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-8">
+                        No hay datos recopilados aún
+                      </p>
+                    ) : (
+                      Object.entries(contextData).map(([key, value]) => (
+                        <div key={key} className="flex items-start gap-2 rounded-lg border p-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-muted-foreground capitalize">
+                              {key.replace(/_/g, ' ')}
+                            </p>
+                            <p className="text-sm mt-0.5 wrap-break-word">{value}</p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => handleCopyValue(key, value)}
+                          >
+                            {copiedKey === key ? (
+                              <Check className="w-3.5 h-3.5 text-green-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </SheetContent>
+              </Sheet>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8">
+                    <MoreVertical className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Cambiar estado
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {(Object.entries(CONVERSATION_STATUS_LABELS) as [string, string][]).map(([value, label]) => (
+                        <DropdownMenuItem
+                          key={value}
+                          disabled={selectedConversation.status === value}
+                          onSelect={() => handleStatusChange(value, label)}
+                        >
+                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${value === 'nueva' ? 'bg-blue-500' : value === 'en_atencion' ? 'bg-amber-500' : 'bg-gray-400'}`} />
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  {selectedConversation.patient_id && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        window.open(`/dashboard/patients/${selectedConversation.patient_id}`, '_blank')
+                      }}
+                    >
+                      <UserCircle className="w-4 h-4 mr-2" />
+                      Ver paciente
+                    </DropdownMenuItem>
+                  )}
+                  {selectedConversation.status !== 'cerrada' && (
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={handleCloseConversation}
+                    >
+                      <XCircle className="w-4 h-4 mr-2" />
+                      Cerrar conversación
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => setSelectedConversation(null)}
+                  >
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Salir del chat
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 

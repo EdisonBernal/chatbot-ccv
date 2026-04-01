@@ -64,19 +64,27 @@ export async function POST(
               .messages.create({
                 author: user?.id || 'staff',
                 body: body.trim(),
+                xTwilioWebhookEnabled: 'true',
               })
 
-            // Update DB record with Twilio message SID and index
+            // Update DB record with Twilio message SID, index, and mark as 'sent'
+            // since Twilio accepted the message (moves from queued → sent immediately)
             if (twilioMsg?.sid) {
               const { error: updateError } = await writeClient
                 .from('conversation_messages')
                 .update({
                   twilio_sid: twilioMsg.sid,
                   message_index: twilioMsg.index ?? null,
+                  delivery_status: 'sent',
                 })
                 .eq('id', message.id)
               if (updateError) {
                 console.error('[v0] Failed to save twilio_sid to DB', { messageId: message.id, sid: twilioMsg.sid, error: updateError })
+              } else {
+                // Broadcast the status update so the UI reflects 'sent' immediately
+                try {
+                  await broadcastToConversation(id, { ...message, twilio_sid: twilioMsg.sid, message_index: twilioMsg.index ?? null, delivery_status: 'sent' }, writeClient, 'UPDATE')
+                } catch (_) { /* ignore */ }
               }
             }
           } catch (sendErr: any) {
@@ -96,11 +104,12 @@ export async function POST(
                   .messages.create({
                     author: user?.id || 'staff',
                     body: body.trim(),
+                    xTwilioWebhookEnabled: 'true',
                   })
                 if (retryMsg?.sid) {
                   await writeClient
                     .from('conversation_messages')
-                    .update({ twilio_sid: retryMsg.sid, message_index: retryMsg.index ?? null })
+                    .update({ twilio_sid: retryMsg.sid, message_index: retryMsg.index ?? null, delivery_status: 'sent' })
                     .eq('id', message.id)
                 }
               }

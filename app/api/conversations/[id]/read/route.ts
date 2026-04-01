@@ -10,17 +10,13 @@ export async function POST(
     const { id } = await params
     await markConversationMessagesRead(id)
 
-    // Use Twilio Conversations Read Horizon to signal WhatsApp
-    // that messages have been read (triggers blue check marks).
+    // ── REST API fallback: advance Read Horizon with xTwilioWebhookEnabled ──
+    // The frontend SDK also calls setAllMessagesRead(), but the REST API
+    // with xTwilioWebhookEnabled: true explicitly tells Twilio to trigger
+    // all channel-level side effects (including WhatsApp read receipts).
     //
-    // IMPORTANT: The REST API update needs xTwilioWebhookEnabled so Twilio
-    // treats it as a full "participant action" and sends the WhatsApp read
-    // receipt back. Without this header, REST API calls are silent and do NOT
-    // trigger channel-side effects like WhatsApp blue checks.
-    //
-    // Also verify in Twilio Console → Conversations → Service → Settings:
-    //   - "Read Status" must be enabled
-    //   - Post-Event webhook must include onDeliveryUpdated
+    // IMPORTANT: This only triggers a real read receipt if lastReadMessageIndex
+    // actually CHANGES. If it's already at the latest index, it's a no-op.
     try {
       const supabase = await createClient()
       const conversation = await getConversationById(id, supabase)
@@ -29,7 +25,6 @@ export async function POST(
       const authToken = process.env.TWILIO_AUTH_TOKEN
 
       if (conversation && serviceSid && accountSid && authToken) {
-        // Get a validated conversation SID (handles stale/404 SIDs)
         const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
           ? (await import('@supabase/supabase-js')).createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY)
           : null
@@ -38,69 +33,70 @@ export async function POST(
           ? await ensureConversationSid(id, conversation.whatsapp_number, writeClient)
           : conversation.conversation_sid
 
-        if (!convSid) {
-          // No valid Twilio conversation — skip Read Horizon silently
-          return NextResponse.json({ status: 'ok' })
-        }
+        if (convSid) {
+          const { data: { user } } = await supabase.auth.getUser()
+          const identity = user?.id
 
-        // Get the authenticated user identity
-        const { data: { user } } = await supabase.auth.getUser()
-        const identity = user?.id
+          if (identity) {
+            const participantOk = await ensureStaffParticipant(convSid, identity)
+            if (participantOk) {
+              const twilio = require('twilio')
+              const client = twilio(accountSid, authToken)
 
-        if (identity) {
-          // Ensure the staff user is a participant in this conversation
-          const participantOk = await ensureStaffParticipant(convSid, identity)
-          if (!participantOk) {
-            // Conversation may no longer exist — skip Read Horizon
-            return NextResponse.json({ status: 'ok' })
-          }
-
-          const twilio = require('twilio')
-          const client = twilio(accountSid, authToken)
-
-          try {
-            // Fetch the latest message index directly from Twilio (more reliable
-            // than using the DB which may have null/stale indexes).
-            const twilioMessages = await client.conversations.v1
-              .services(serviceSid)
-              .conversations(convSid)
-              .messages.list({ limit: 1, order: 'desc' })
-
-            const lastIndex = twilioMessages[0]?.index
-
-            if (lastIndex != null) {
-              const participants = await client.conversations.v1
-                .services(serviceSid)
-                .conversations(convSid)
-                .participants.list({ limit: 50 })
-
-              const staffParticipant = participants.find(
-                (p: any) => p.identity === identity
-              )
-
-              if (staffParticipant) {
-                // Include xTwilioWebhookEnabled so the Read Horizon update is
-                // published as a full event, which triggers WhatsApp read receipts.
-                await client.conversations.v1
+              try {
+                // Fetch latest message index from Twilio
+                const twilioMessages = await client.conversations.v1
                   .services(serviceSid)
                   .conversations(convSid)
-                  .participants(staffParticipant.sid)
-                  .update({
-                    lastReadMessageIndex: lastIndex,
-                    xTwilioWebhookEnabled: 'true',
-                  })
-                console.log('[read] Read Horizon advanced to index', lastIndex, 'for participant', staffParticipant.sid)
-              } else {
-                console.warn('[read] Staff participant not found for identity', identity)
+                  .messages.list({ limit: 1, order: 'desc' })
+
+                const lastIndex = twilioMessages[0]?.index
+
+                if (lastIndex != null) {
+                  // Find our staff participant
+                  const participants = await client.conversations.v1
+                    .services(serviceSid)
+                    .conversations(convSid)
+                    .participants.list({ limit: 50 })
+
+                  const staffParticipant = participants.find(
+                    (p: any) => p.identity === identity
+                  )
+
+                  if (staffParticipant) {
+                    const currentIndex = staffParticipant.lastReadMessageIndex
+                    console.log('[read] Staff participant:', staffParticipant.sid,
+                      '| currentIndex:', currentIndex, '| lastIndex:', lastIndex)
+
+                    // Only update if the index actually needs to advance
+                    // (no-op updates won't trigger WhatsApp read receipts)
+                    if (currentIndex === null || currentIndex < lastIndex) {
+                      await client.conversations.v1
+                        .services(serviceSid)
+                        .conversations(convSid)
+                        .participants(staffParticipant.sid)
+                        .update({
+                          lastReadMessageIndex: lastIndex,
+                          xTwilioWebhookEnabled: 'true',
+                        })
+                      console.log('[read] Read Horizon advanced:', currentIndex, '→', lastIndex,
+                        'for participant', staffParticipant.sid, '(xTwilioWebhookEnabled: true)')
+                    } else {
+                      console.log('[read] Read Horizon already at latest index', lastIndex, '— no update needed')
+                    }
+                  } else {
+                    console.warn('[read] Staff participant not found for identity', identity)
+                  }
+                } else {
+                  console.warn('[read] No messages in Twilio conversation', convSid)
+                }
+              } catch (readError: any) {
+                if (readError?.status === 404 || readError?.code === 20404) {
+                  console.warn('[read] Conversation no longer exists in Twilio')
+                } else {
+                  console.warn('[read] Error advancing Read Horizon:', readError)
+                }
               }
-            } else {
-              console.warn('[read] No messages found in Twilio conversation', convSid)
-            }
-          } catch (readError: any) {
-            if (readError?.status === 404 || readError?.code === 20404) {
-              console.warn('[read] Conversation no longer exists in Twilio, skipping Read Horizon')
-            } else {
-              console.warn('[read] Error advancing Read Horizon:', readError)
             }
           }
         }

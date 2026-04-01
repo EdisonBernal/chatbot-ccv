@@ -90,6 +90,8 @@ export async function POST(request: NextRequest) {
       // ignore — conversationId is optional
     }
 
+    console.log('[twilio-token] Token generated for identity:', identity, 'conversationSid:', resolvedConversationSid)
+
     return NextResponse.json({
       token: token.toJwt(),
       identity,

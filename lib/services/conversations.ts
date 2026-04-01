@@ -510,12 +510,14 @@ export async function sendMessageWithTwilio(
       }
 
       // Send message via Twilio Conversations API
+      // xTwilioWebhookEnabled triggers onDeliveryUpdated webhooks for REST API calls
       const twilioMsg = await client.conversations.v1
         .services(serviceSid)
         .conversations(convSid)
         .messages.create({
           author: 'bot',
           body: messageText,
+          xTwilioWebhookEnabled: 'true',
         })
 
       // Update DB record with Twilio message SID and message index
@@ -532,6 +534,7 @@ export async function sendMessageWithTwilio(
         .update({
           twilio_sid: twilioMsg.sid,
           message_index: twilioMsg.index ?? null,
+          delivery_status: 'sent',
         })
         .eq('id', createdMessage.id)
         .select(`*, sender:users(*)`)
@@ -539,7 +542,7 @@ export async function sendMessageWithTwilio(
 
       if (!updateError && updatedData) {
         try {
-          await broadcastToConversation(conversationId, updatedData, writeClient)
+          await broadcastToConversation(conversationId, updatedData, writeClient, 'UPDATE')
         } catch (bErr) {
           // ignore broadcast failures
         }
