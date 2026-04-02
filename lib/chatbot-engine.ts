@@ -176,6 +176,7 @@ export class ChatbotEngine {
       if (!conversation) return
 
       // ── Session timeout check ──────────────────────────────────
+      const wasFreshSession = !this.userContext['chatbot_current_step_id']
       let currentStepId = this.userContext['chatbot_current_step_id']
 
       if (currentStepId) {
@@ -267,6 +268,13 @@ export class ChatbotEngine {
       if (selectedStep) {
         // Reset retry counter when entering a new step
         await setChatbotContext(this.conversationId, 'chatbot_retry_count', '0', this.supabase)
+
+        // When starting a fresh session (no previous step), execute the matched
+        // step's entry actions first so that the welcome/greeting message is
+        // shown before navigating onwards.
+        if (wasFreshSession) {
+          await this.executeEntryActions(selectedStep, config)
+        }
 
         // Execute response actions (collect_info, redirect_to_agent, etc.)
         await this.executeResponseActions(selectedStep, config, message)

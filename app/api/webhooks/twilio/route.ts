@@ -1,5 +1,5 @@
 import { sendMessage, updateConversationMessageStatusByTwilioSid } from '@/lib/services/conversations'
-import { getChatbotConfigs } from '@/lib/services/chatbot'
+import { getChatbotConfigs, clearChatbotSession } from '@/lib/services/chatbot'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { ChatbotEngine } from '@/lib/chatbot-engine'
@@ -283,12 +283,24 @@ export async function POST(request: NextRequest) {
         }
 
         // Update conversation last message
+        // If conversation was closed, reset to 'nueva' and clear chatbot session
+        // so the chatbot restarts from the welcome step.
+        const newStatus = conv.status === 'cerrada' ? 'nueva' : conv.status
+        if (conv.status === 'cerrada') {
+          try {
+            await clearChatbotSession(conv.id, writeClient)
+          } catch {
+            // ignore — session may already be cleared
+          }
+          conv.status = 'nueva'
+        }
+
         await (writeClient)
           .from('conversations')
           .update({
             last_message: body,
             last_message_at: new Date().toISOString(),
-            status: conv.status === 'nueva' ? 'nueva' : conv.status,
+            status: newStatus,
           })
           .eq('id', conv.id)
 

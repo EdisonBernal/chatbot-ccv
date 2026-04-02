@@ -104,6 +104,16 @@ export function WhatsAppConversationsClient({
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<HTMLDivElement>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
+  const viewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounced call to update last_view_at so the server knows the user is
+  // still viewing this conversation (keeps unread counts accurate on refresh).
+  const debouncedUpdateView = (conversationId: string) => {
+    if (viewDebounceRef.current) clearTimeout(viewDebounceRef.current)
+    viewDebounceRef.current = setTimeout(() => {
+      fetch(`/api/conversations/${conversationId}/view`, { method: 'POST' }).catch(() => {})
+    }, 1000)
+  }
 
   // Scroll automático cuando hay nuevos mensajes
   const performScrollToBottom = () => {
@@ -162,6 +172,13 @@ export function WhatsAppConversationsClient({
     if (messages.length === 0) return
     scheduleScrollToBottom()
   }, [messages])
+
+  // Scroll when loading finishes — the Spinner is replaced by actual messages
+  useEffect(() => {
+    if (!isLoadingMessages && selectedConversation && messages.length > 0) {
+      scheduleScrollToBottom()
+    }
+  }, [isLoadingMessages])
 
   // Suscripción realtime para nuevos mensajes (actualiza la UI automáticamente)
   // keep a ref updated for the selected conversation so the subscription
@@ -229,6 +246,8 @@ export function WhatsAppConversationsClient({
                   return prev
                 }
               })
+              // Keep last_view_at fresh so unread counts stay 0 on page refresh
+              debouncedUpdateView(sel.id)
             }
           })
           .on('broadcast', { event: 'UPDATE' }, (payload) => {
@@ -304,6 +323,10 @@ export function WhatsAppConversationsClient({
                 // and only if this conversation is not currently selected/open.
                 if (msg.sender_type === 'patient' && selectedConversationRef.current?.id !== msg.conversation_id) {
                   conv.unread_count = (conv.unread_count || 0) + 1
+                } else if (selectedConversationRef.current?.id === msg.conversation_id) {
+                  // User is viewing this conversation — keep it marked as read
+                  conv.unread_count = 0
+                  conv.last_view_at = new Date().toISOString()
                 }
 
                 return [conv, ...updated]
@@ -317,22 +340,16 @@ export function WhatsAppConversationsClient({
             const msg = extractBroadcastMessage(raw)
             
             if (!msg || !msg.conversation_id) return
+            // UPDATE events are for delivery status changes / metadata (twilio_sid).
+            // Do NOT increment unread_count or reorder conversations — that is
+            // handled by the INSERT event only.
             setConversations((prev) => {
               try {
-                const updated = prev.map((c) =>
+                return prev.map((c) =>
                   c.id === msg.conversation_id
-                    ? { ...c, last_message: msg.message_text, last_message_at: msg.created_at }
+                    ? { ...c, last_message: msg.message_text || c.last_message }
                     : c
                 )
-                const idx = updated.findIndex((c) => c.id === msg.conversation_id)
-                if (idx === -1) return updated
-                const [conv] = updated.splice(idx, 1)
-
-                if (msg.sender_type === 'patient' && selectedConversationRef.current?.id !== msg.conversation_id) {
-                  conv.unread_count = (conv.unread_count || 0) + 1
-                }
-
-                return [conv, ...updated]
               } catch (e) {
                 return prev
               }
@@ -397,6 +414,8 @@ export function WhatsAppConversationsClient({
                   return prev
                 }
               })
+              // Keep last_view_at fresh so unread counts stay 0 on page refresh
+              debouncedUpdateView(sel.id)
             }
           })
           .on('broadcast', { event: 'UPDATE' }, (payload) => {
@@ -526,14 +545,16 @@ export function WhatsAppConversationsClient({
         const msgs = await res.json()
         setMessages(msgs)
         setSelectedConversation(conv)
+        // Stop showing spinner BEFORE scrolling so the DOM renders messages
+        setIsLoadingMessages(false)
 
         // Marcar mensajes como leídos (para chulitos de lectura)
-        await fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' })
+        fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' }).catch(() => {})
 
         scheduleScrollToBottom()
 
         // Actualizar last_view_at
-        await fetch(`/api/conversations/${conv.id}/view`, { method: 'POST' })
+        fetch(`/api/conversations/${conv.id}/view`, { method: 'POST' }).catch(() => {})
         // Actualizar la conversación en la lista
         setConversations((prev) =>
           prev.map((c) =>
@@ -716,7 +737,7 @@ export function WhatsAppConversationsClient({
                     <SheetTitle>Datos recopilados</SheetTitle>
                     <SheetDescription className="sr-only">Información recopilada por el chatbot durante la conversación</SheetDescription>
                   </SheetHeader>
-                  <div className="mt-4 space-y-3 flex-1 overflow-y-auto">
+                  <div className="mt-4 flex-1 overflow-y-auto">
                     {isLoadingContext ? (
                       <div className="flex justify-center py-8">
                         <Spinner className="w-5 h-5" />
@@ -725,14 +746,28 @@ export function WhatsAppConversationsClient({
                       <p className="text-sm text-muted-foreground text-center py-8">
                         No hay datos recopilados aún
                       </p>
-                    ) : (
-                      Object.entries(contextData).map(([key, value]) => (
-                        <div key={key} className="flex items-start gap-2 rounded-lg border p-3">
+                    ) : (() => {
+                      // Separate personal info (collect_info fields) from flow responses
+                      const personalKeys: [string, string][] = []
+                      const flowKeys: [string, string][] = []
+                      for (const [key, value] of Object.entries(contextData)) {
+                        if (key.startsWith('response_')) {
+                          flowKeys.push([key, value])
+                        } else {
+                          personalKeys.push([key, value])
+                        }
+                      }
+
+                      const formatLabel = (key: string): string => {
+                        const cleaned = key.replace(/^response_/, '').replace(/_/g, ' ')
+                        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+                      }
+
+                      const renderItem = ([key, value]: [string, string]) => (
+                        <div key={key} className="flex items-center gap-2 py-1.5">
                           <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium text-muted-foreground capitalize">
-                              {key.replace(/_/g, ' ')}
-                            </p>
-                            <p className="text-sm mt-0.5 wrap-break-word">{value}</p>
+                            <p className="text-xs text-muted-foreground">{formatLabel(key)}</p>
+                            <p className="text-sm font-medium wrap-break-word">{value}</p>
                           </div>
                           <Button
                             variant="ghost"
@@ -747,8 +782,27 @@ export function WhatsAppConversationsClient({
                             )}
                           </Button>
                         </div>
-                      ))
-                    )}
+                      )
+
+                      return (
+                        <div className="space-y-1">
+                          {/* Personal info section */}
+                          {personalKeys.length > 0 && (
+                            <div className="rounded-lg border p-3 space-y-0.5">
+                              {personalKeys.map(renderItem)}
+                            </div>
+                          )}
+
+                          {/* Flow responses section */}
+                          {flowKeys.length > 0 && (
+                            <div className="rounded-lg border p-3 space-y-0.5 mt-3">
+                              <p className="text-xs font-medium text-muted-foreground mb-2">Opciones seleccionadas</p>
+                              {flowKeys.map(renderItem)}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 </SheetContent>
               </Sheet>
