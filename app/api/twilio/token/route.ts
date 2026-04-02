@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
           if (resolvedConversationSid) {
             const ok = await ensureStaffParticipant(resolvedConversationSid, identity)
             if (!ok) {
-              console.warn('[twilio-token] ensureStaffParticipant failed for', resolvedConversationSid)
+              // ensureStaffParticipant failed
             }
           }
         }
@@ -90,15 +90,12 @@ export async function POST(request: NextRequest) {
       // ignore — conversationId is optional
     }
 
-    console.log('[twilio-token] Token generated for identity:', identity, 'conversationSid:', resolvedConversationSid)
-
     return NextResponse.json({
       token: token.toJwt(),
       identity,
       conversationSid: resolvedConversationSid,
     })
-  } catch (error) {
-    console.error('[twilio-token] Error generating token:', error)
+  } catch {
     return NextResponse.json(
       { error: 'Failed to generate token' },
       { status: 500 }

@@ -170,17 +170,10 @@ export class ChatbotEngine {
       await this.initialize()
 
       const steps = await getChatbotSteps(config.id, this.supabase)
-      console.log('[ChatbotEngine] config', config.id, 'steps', steps.length, 'message', message)
-      if (!steps.length) {
-        console.log('[ChatbotEngine] no steps found')
-        return
-      }
+      if (!steps.length) return
 
       const conversation = await getConversationById(this.conversationId, this.supabase)
-      if (!conversation) {
-        console.log('[ChatbotEngine] conversation not found', this.conversationId)
-        return
-      }
+      if (!conversation) return
 
       // ── Session timeout check ──────────────────────────────────
       let currentStepId = this.userContext['chatbot_current_step_id']
@@ -194,7 +187,6 @@ export class ChatbotEngine {
           : Infinity
 
         if (elapsed > SESSION_TIMEOUT_MS) {
-          console.log('[ChatbotEngine] Session expired after', Math.round(elapsed / 60000), 'min — clearing')
           await clearChatbotSessionState(this.conversationId, this.supabase)
           this.userContext = {}
           currentStepId = undefined as any
@@ -230,8 +222,6 @@ export class ChatbotEngine {
             await setChatbotContext(this.conversationId, 'chatbot_retry_count', String(retryCount), this.supabase)
 
             if (retryCount >= (config.max_retries || 3)) {
-              // Too many retries → escalate to agent
-              console.log('[ChatbotEngine] Max retries reached (' + retryCount + ') — escalating')
               await clearChatbotSessionState(this.conversationId, this.supabase)
               await this.redirectToAgent(config.escalation_message)
               return
@@ -275,7 +265,6 @@ export class ChatbotEngine {
       }
 
       if (selectedStep) {
-        console.log('[ChatbotEngine] selected step', selectedStep.id, selectedStep.name, 'trigger', selectedStep.trigger_type)
         // Reset retry counter when entering a new step
         await setChatbotContext(this.conversationId, 'chatbot_retry_count', '0', this.supabase)
 
@@ -289,7 +278,6 @@ export class ChatbotEngine {
         const nextStep = this.resolveNextStep(selectedStep, steps, matchedKeyword)
 
         if (nextStep) {
-          console.log('[ChatbotEngine] navigating to', nextStep.name, '(step_number', nextStep.step_number, ')')
           await this.navigateToStep(nextStep, config)
         } else {
           // Flow completed — clear session state but keep collected responses
@@ -312,7 +300,6 @@ export class ChatbotEngine {
         )
       }
     } catch (error) {
-      console.error('[ChatbotEngine] Error processing message:', error)
       await logChatbotExecution(
         {
           conversation_id: this.conversationId,
@@ -467,8 +454,8 @@ export class ChatbotEngine {
         })
 
       if (error) throw error
-    } catch (error) {
-      console.error('[ChatbotEngine] Error creating appointment:', error)
+    } catch {
+      // ignore
     }
   }
 
@@ -481,8 +468,8 @@ export class ChatbotEngine {
       const value = userMessage.trim() || _fieldLabel
       await setChatbotContext(this.conversationId, fieldName, value, this.supabase)
       this.userContext[fieldName] = value
-    } catch (error) {
-      console.error('[ChatbotEngine] Error collecting info:', error)
+    } catch {
+      // ignore
     }
   }
 
@@ -501,8 +488,8 @@ export class ChatbotEngine {
         .eq('id', this.conversationId)
 
       if (error) throw error
-    } catch (error) {
-      console.error('[ChatbotEngine] Error redirecting to agent:', error)
+    } catch {
+      // ignore
     }
   }
 }

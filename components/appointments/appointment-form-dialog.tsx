@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react'
 import type { AppointmentRequest, Patient, Specialty, AppointmentFormData } from '@/lib/types'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -93,6 +93,9 @@ export function AppointmentFormDialog({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Editar solicitud' : 'Nueva solicitud de cita'}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {isEdit ? 'Editar los datos de la solicitud de cita' : 'Crear una nueva solicitud de cita'}
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">

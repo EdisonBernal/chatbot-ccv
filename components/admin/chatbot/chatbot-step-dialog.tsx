@@ -128,7 +128,6 @@ export function ChatbotStepDialog({
   const handleAddKeyword = () => {
     if (keywordInput.trim()) {
       const updatedKeywords = [...(formData.trigger_keywords || []), keywordInput.trim()]
-      console.log('[ChatbotStepDialog] add keyword', keywordInput.trim(), 'updatedKeywords', updatedKeywords)
       setFormData({
         ...formData,
         trigger_keywords: updatedKeywords,
@@ -151,7 +150,6 @@ export function ChatbotStepDialog({
     const pendingKeyword = keywordInput.trim()
     if (formData.trigger_type === 'keyword' && pendingKeyword) {
       keywords = [...keywords, pendingKeyword]
-      console.log('[ChatbotStepDialog] handleSave adding pending keyword to payload', pendingKeyword)
     }
 
     // Clean up keyword_routes: remove empty values and keywords not in the list
@@ -170,7 +168,6 @@ export function ChatbotStepDialog({
       keyword_routes: Object.keys(cleanRoutes).length > 0 ? cleanRoutes : null,
     }
 
-    console.log('[ChatbotStepDialog] handleSave payload', payload)
     await onSave(payload)
   }
 

@@ -65,9 +65,7 @@ export async function POST(
 
                   if (staffParticipant) {
                     const currentIndex = staffParticipant.lastReadMessageIndex
-                    console.log('[read] Staff participant:', staffParticipant.sid,
-                      '| currentIndex:', currentIndex, '| lastIndex:', lastIndex)
-
+                    
                     // Only update if the index actually needs to advance
                     // (no-op updates won't trigger WhatsApp read receipts)
                     if (currentIndex === null || currentIndex < lastIndex) {
@@ -79,30 +77,23 @@ export async function POST(
                           lastReadMessageIndex: lastIndex,
                           xTwilioWebhookEnabled: 'true',
                         })
-                      console.log('[read] Read Horizon advanced:', currentIndex, '→', lastIndex,
-                        'for participant', staffParticipant.sid, '(xTwilioWebhookEnabled: true)')
                     } else {
-                      console.log('[read] Read Horizon already at latest index', lastIndex, '— no update needed')
                     }
                   } else {
-                    console.warn('[read] Staff participant not found for identity', identity)
+                    // staff participant not found
                   }
                 } else {
-                  console.warn('[read] No messages in Twilio conversation', convSid)
+                  // no messages
                 }
-              } catch (readError: any) {
-                if (readError?.status === 404 || readError?.code === 20404) {
-                  console.warn('[read] Conversation no longer exists in Twilio')
-                } else {
-                  console.warn('[read] Error advancing Read Horizon:', readError)
-                }
+              } catch {
+                // ignore Twilio read horizon errors
               }
             }
           }
         }
       }
-    } catch (e) {
-      console.warn('[read] Error updating Read Horizon:', e)
+    } catch {
+      // ignore
     }
 
     return NextResponse.json({ status: 'ok' })

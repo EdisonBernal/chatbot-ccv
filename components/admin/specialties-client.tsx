@@ -33,7 +33,7 @@ export function SpecialtiesClient({ specialties: initialSpecialties }: Specialti
         setName('')
       }
     } catch (e) {
-      console.error('Error adding specialty:', e)
+
     } finally {
       setLoading(false)
     }
@@ -47,7 +47,7 @@ export function SpecialtiesClient({ specialties: initialSpecialties }: Specialti
         setSpecialties(specialties.filter(s => s.id !== id))
       }
     } catch (e) {
-      console.error('Error deleting specialty:', e)
+
     }
   }
 

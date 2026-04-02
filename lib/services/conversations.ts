@@ -325,10 +325,7 @@ export async function ensureConversationSid(
   if (!client) return null
 
   const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
-  if (!serviceSid) {
-    console.warn('[twilio-conversations] CONVERSATIONS_SERVICE_SID not set')
-    return null
-  }
+  if (!serviceSid) return null
 
   // If we have a stored SID, validate it against Twilio
   if (conv?.conversation_sid) {
@@ -342,13 +339,8 @@ export async function ensureConversationSid(
         return conv.conversation_sid
       }
       // Conversation exists but is closed — treat as stale
-      console.warn('[twilio-conversations] Conversation is closed, will create a new one', conv.conversation_sid)
-    } catch (err: any) {
-      if (err?.status === 404 || err?.code === 20404) {
-        console.warn('[twilio-conversations] Stored conversation_sid is stale (404), clearing:', conv.conversation_sid)
-      } else {
-        console.error('[twilio-conversations] Error validating conversation_sid:', err)
-      }
+    } catch {
+      // ignore — stale or invalid SID
     }
     // Clear the stale SID from DB
     const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -425,8 +417,7 @@ export async function ensureConversationSid(
       .eq('id', conversationId)
 
     return newConv.sid
-  } catch (err) {
-    console.error('[twilio-conversations] ensureConversationSid error:', err)
+  } catch {
     return null
   }
 }
@@ -463,17 +454,10 @@ export async function ensureStaffParticipant(
       .conversations(conversationSid)
       .participants.create({ identity })
 
-    console.log(`[twilio-conversations] Added staff participant ${identity} to ${conversationSid}`)
     return true
   } catch (err: any) {
-    // 50433 = Participant already exists (race condition)
     if (err?.code === 50433) return true
-    // 20404 = Conversation not found (stale SID) — caller should handle recovery
-    if (err?.status === 404 || err?.code === 20404) {
-      console.warn('[twilio-conversations] ensureStaffParticipant: conversation not found (404)', conversationSid)
-      return false
-    }
-    console.error('[twilio-conversations] ensureStaffParticipant error:', err)
+    if (err?.status === 404 || err?.code === 20404) return false
     return false
   }
 }
@@ -505,7 +489,6 @@ export async function sendMessageWithTwilio(
       )
 
       if (!convSid) {
-        console.warn('[twilio-conversations] Could not obtain conversation_sid, message saved locally only')
         return createdMessage
       }
 
@@ -547,11 +530,11 @@ export async function sendMessageWithTwilio(
           // ignore broadcast failures
         }
       }
-    } catch (twilioError) {
-      console.error('[twilio-conversations] Error sending message:', twilioError)
+    } catch {
+      // ignore Twilio errors — message already saved locally
     }
   } else {
-    console.warn('[twilio-conversations] Twilio not configured, message saved locally only')
+    // Twilio not configured
   }
 
   return createdMessage

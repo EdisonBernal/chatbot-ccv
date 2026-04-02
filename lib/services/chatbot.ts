@@ -132,18 +132,12 @@ export async function createChatbotStep(
     payload.trigger_keywords = []
   }
 
-  console.log('[services/chatbot] createChatbotStep payload', payload)
-
   const { data, error } = await supabase
     .from('chatbot_steps')
     .insert(payload)
     .select('*, actions:chatbot_step_actions(*)')
     .single()
-  if (error) {
-    console.error('[services/chatbot] createChatbotStep error', error)
-    throw error
-  }
-  console.log('[services/chatbot] createChatbotStep result', data)
+  if (error) throw error
   return data as ChatbotStep
 }
 

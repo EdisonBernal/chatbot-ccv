@@ -44,7 +44,7 @@ function verifyTwilioSignature(req: NextRequest, formData: Record<string, FormDa
 
   const computed = crypto.createHmac('sha1', token).update(toSign).digest('base64')
   if (signature !== computed) {
-    console.warn('[webhook] Twilio signature mismatch', { header: signature, computed })
+    // signature mismatch
   }
   return signature === computed
 }
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
     // Verify Twilio signature
     const isValid = verifyTwilioSignature(request, formData)
     if (!isValid) {
-      console.warn('Twilio signature verification failed')
+      // signature verification failed
     }
 
     const supabase = await createClient()
@@ -75,7 +75,6 @@ export async function POST(request: NextRequest) {
     // to prevent duplicate messages.
     const smsSid = (formData.SmsSid as string) || (formData.SmsMessageSid as string) || ''
     if (smsSid && !eventType) {
-      console.warn('[webhook] Ignoring Messaging API payload (SmsSid present, no EventType)', { smsSid })
       return new NextResponse(
         `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
         { status: 200, headers: { 'Content-Type': 'application/xml' } }
@@ -92,8 +91,6 @@ export async function POST(request: NextRequest) {
       const status = (formData.Status as string) || ''
       const channelMessageSid = (formData.ChannelMessageSid as string) || ''
 
-      console.log('[webhook] onDeliveryUpdated', { messageSid, status, channelMessageSid })
-
       if (messageSid && status) {
         const mappedStatus: 'queued' | 'sent' | 'delivered' | 'read' =
           status === 'read'
@@ -109,13 +106,13 @@ export async function POST(request: NextRequest) {
         try {
           const result = await updateConversationMessageStatusByTwilioSid(messageSid, mappedStatus, writeClient)
           if (!result.success) {
-            console.warn('[webhook] onDeliveryUpdated DB update failed', { messageSid, status, error: result.error })
+            // DB update failed
           }
-        } catch (e) {
-          console.warn('[webhook] onDeliveryUpdated status update failed', e)
+        } catch {
+          // ignore
         }
       } else {
-        console.warn('[webhook] onDeliveryUpdated missing messageSid or status', { messageSid, status })
+        // missing messageSid or status
       }
 
       return new NextResponse(
@@ -137,7 +134,6 @@ export async function POST(request: NextRequest) {
       // Only process Conversations API SIDs (IM... / CH...).
       // Reject any SM... SIDs that might leak through.
       if (messageSid && messageSid.startsWith('SM')) {
-        console.warn('[webhook] Ignoring SM-prefixed MessageSid inside onMessageAdded', { messageSid })
         return new NextResponse(
           `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
           { status: 200, headers: { 'Content-Type': 'application/xml' } }
@@ -224,7 +220,6 @@ export async function POST(request: NextRequest) {
             .maybeSingle()
 
           if (patientInsertError) {
-            console.error('[webhook] Error creating patient:', patientInsertError)
             throw patientInsertError
           }
           patientId = newPatient?.id || null
@@ -243,7 +238,6 @@ export async function POST(request: NextRequest) {
           .maybeSingle()
 
         if (insertError) {
-          console.error('[webhook] Error inserting conversation:', insertError)
           // Try to fetch again in case of race condition
           const convFilter = `whatsapp_number.eq.${withPlus},whatsapp_number.eq.${noPlus},whatsapp_number.eq.${digitsOnly}`
           const { data: retryConv } = await (writeClient)
@@ -283,8 +277,8 @@ export async function POST(request: NextRequest) {
                 .update(updateFields)
                 .eq('id', createdMsg.id)
             }
-          } catch (e) {
-            console.warn('[webhook] Failed to attach twilio metadata to incoming message', e)
+          } catch {
+            // ignore
           }
         }
 
@@ -307,8 +301,8 @@ export async function POST(request: NextRequest) {
             const engine = new ChatbotEngine(conv.id, writeClient)
             await engine.processMessage(body, activeConfig)
           }
-        } catch (botError) {
-          console.error('[webhook] Chatbot execution error:', botError)
+        } catch {
+          // chatbot execution error — ignore to not block webhook response
         }
       }
 
@@ -324,13 +318,11 @@ export async function POST(request: NextRequest) {
     // are handled. If we reach here, the EventType was not
     // recognised — ignore it gracefully.
     // ─────────────────────────────────────────────────────────────
-    console.warn('[webhook] Unhandled EventType or legacy Messaging request, ignoring.', { eventType, SmsSid: formData.SmsSid })
     return new NextResponse(
       `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
       { status: 200, headers: { 'Content-Type': 'application/xml' } }
     )
-  } catch (error) {
-    console.error('Error processing Twilio webhook:', error)
+  } catch {
     return new NextResponse(
       `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
       { status: 200, headers: { 'Content-Type': 'application/xml' } }

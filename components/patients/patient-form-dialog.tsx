@@ -5,6 +5,7 @@ import type { Patient, EPS, PatientFormData } from '@/lib/types'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -114,6 +115,9 @@ export function PatientFormDialog({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Editar paciente' : 'Nuevo paciente'}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {isEdit ? 'Editar los datos del paciente' : 'Registrar un nuevo paciente'}
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">

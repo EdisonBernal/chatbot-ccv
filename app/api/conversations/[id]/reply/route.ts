@@ -33,7 +33,7 @@ export async function POST(
           .single()
         if (!userRowError && userRow?.id) senderDbId = userRow.id
       } catch (mapErr) {
-        console.warn('[v0] Could not map auth user to users table', mapErr)
+        // ignore
       }
     }
 
@@ -79,7 +79,7 @@ export async function POST(
                 })
                 .eq('id', message.id)
               if (updateError) {
-                console.error('[v0] Failed to save twilio_sid to DB', { messageId: message.id, sid: twilioMsg.sid, error: updateError })
+                // ignore — twilio_sid not saved to DB
               } else {
                 // Broadcast the status update so the UI reflects 'sent' immediately
                 try {
@@ -91,7 +91,6 @@ export async function POST(
             // If 404, the conversation SID was stale even after ensureConversationSid
             // (e.g. race condition). Clear it and retry once.
             if (sendErr?.status === 404 || sendErr?.code === 20404) {
-              console.warn('[v0] Conversation 404 on send, clearing SID and retrying', { convSid })
               await writeClient
                 .from('conversations')
                 .update({ conversation_sid: null })
@@ -118,10 +117,10 @@ export async function POST(
             }
           }
         } else {
-          console.warn('[v0] Could not obtain conversation_sid, message saved locally only')
+          // no convSid
         }
-      } catch (twilioError) {
-        console.error('[v0] Twilio Conversations error:', twilioError)
+      } catch {
+        // ignore Twilio errors
       }
     }
 
@@ -136,7 +135,6 @@ export async function POST(
 
     return NextResponse.json(message, { status: 201 })
   } catch (e: unknown) {
-    console.error('[v0] Error in reply route:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }

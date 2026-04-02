@@ -1,6 +1,6 @@
  'use client'
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import type { Conversation, ConversationMessage } from '@/lib/types'
 import { CONVERSATION_STATUS_LABELS, CONVERSATION_STATUS_COLORS } from '@/lib/types'
 import { Input } from '@/components/ui/input'
@@ -29,6 +29,7 @@ import {
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -54,7 +55,6 @@ import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client'
-import { useTwilioConversations } from '@/hooks/use-twilio-conversations'
 interface WhatsAppConversationsClientProps {
   initialConversations: Conversation[]
 }
@@ -103,24 +103,6 @@ export function WhatsAppConversationsClient({
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<HTMLDivElement>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
-
-  // Twilio Conversations SDK: handles Read Horizon + delivery status updates
-  const handleMessageUpdated = useCallback((messageSid: string, status: string) => {
-    // Update the delivery_status of the matching message in our local state
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.twilio_sid === messageSid
-          ? { ...m, delivery_status: status as any }
-          : m
-      )
-    )
-  }, [])
-
-  const { advanceReadHorizon, isConnected: isTwilioConnected } = useTwilioConversations({
-    conversationId: selectedConversation?.id ?? null,
-    enabled: !!selectedConversation?.whatsapp_number,
-    onMessageUpdated: handleMessageUpdated,
-  })
 
   // Scroll automático cuando hay nuevos mensajes
   const performScrollToBottom = () => {
@@ -275,7 +257,7 @@ export function WhatsAppConversationsClient({
           })
           .subscribe(() => {})
       } catch (e) {
-        console.warn('[realtime] subscribeToConversation error', e)
+        // ignore
       }
     }
 
@@ -547,13 +529,6 @@ export function WhatsAppConversationsClient({
         // Marcar mensajes como leídos (para chulitos de lectura)
         await fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' })
 
-        // Advance Read Horizon via SDK (triggers blue checks on WhatsApp)
-        // This will fire once the hook connects; also call it explicitly
-        advanceReadHorizon()
-
-        // Optimistic update: mark staff messages as read locally so ticks turn blue immediately
-        setMessages((prev) => prev.map((m) => (m.sender_type === 'staff' ? { ...m, delivery_status: 'read' } : m)))
-
         scheduleScrollToBottom()
 
         // Actualizar last_view_at
@@ -567,8 +542,7 @@ export function WhatsAppConversationsClient({
           )
         )
       }
-    } catch (error) {
-      console.error('Error loading messages:', error)
+    } catch {
       toast.error('Error al cargar los mensajes')
     } finally {
       setIsLoadingMessages(false)
@@ -594,8 +568,7 @@ export function WhatsAppConversationsClient({
       } else {
         toast.error('Error al enviar el mensaje')
       }
-    } catch (error) {
-      console.error('Error sending message:', error)
+    } catch {
       toast.error('Error al enviar el mensaje')
     } finally {
       setIsSending(false)
@@ -740,6 +713,7 @@ export function WhatsAppConversationsClient({
                 <SheetContent className="w-80 sm:w-96 flex flex-col">
                   <SheetHeader>
                     <SheetTitle>Datos recopilados</SheetTitle>
+                    <SheetDescription className="sr-only">Información recopilada por el chatbot durante la conversación</SheetDescription>
                   </SheetHeader>
                   <div className="mt-4 space-y-3 flex-1 overflow-y-auto">
                     {isLoadingContext ? (

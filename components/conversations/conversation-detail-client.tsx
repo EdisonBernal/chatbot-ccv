@@ -23,7 +23,6 @@ import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { useTwilioConversations } from '@/hooks/use-twilio-conversations'
 
 interface ConversationDetailClientProps {
   conversation: Conversation
@@ -45,24 +44,16 @@ export function ConversationDetailClient({
   const [isSending, startSending] = useTransition()
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Twilio Conversations SDK: connect and enable Read Horizon
-  const { advanceReadHorizon } = useTwilioConversations({
-    conversationId: conversation.id,
-    enabled: !!conversation.whatsapp_number,
-  })
-
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Advance Read Horizon when component mounts or messages change
+  // Mark as read when component mounts or messages change
   useEffect(() => {
     if (conversation.whatsapp_number && messages.length > 0) {
-      advanceReadHorizon()
-      // Also call the backend mark-as-read endpoint
       fetch(`/api/conversations/${conversation.id}/read`, { method: 'POST' }).catch(() => {})
     }
-  }, [conversation.whatsapp_number, conversation.id, messages.length, advanceReadHorizon])
+  }, [conversation.whatsapp_number, conversation.id, messages.length])
 
   const handleStatusChange = (newStatus: ConversationStatus) => {
     startTransition(async () => {

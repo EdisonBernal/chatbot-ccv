@@ -35,7 +35,7 @@ export function EPSClient({ eps: initialEps }: EPSClientProps) {
         setCode('')
       }
     } catch (e) {
-      console.error('Error adding EPS:', e)
+
     } finally {
       setLoading(false)
     }
@@ -49,7 +49,7 @@ export function EPSClient({ eps: initialEps }: EPSClientProps) {
         setEpsList(epsList.filter(e => e.id !== id))
       }
     } catch (e) {
-      console.error('Error deleting EPS:', e)
+
     }
   }
 

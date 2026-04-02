@@ -22,13 +22,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .maybeSingle()
 
     if (error) {
-      console.error('[debug] conversation-last-message error', error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
     return NextResponse.json(data || null)
   } catch (e: unknown) {
-    console.error('[debug] conversation-last-message exception', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }

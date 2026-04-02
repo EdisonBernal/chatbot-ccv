@@ -23,7 +23,7 @@ export function UsersClient({ users: initialUsers }: UsersClientProps) {
         setUsers(users.filter(u => u.id !== id))
       }
     } catch (e) {
-      console.error('Error deleting user:', e)
+
     }
   }
 

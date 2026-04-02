@@ -20,7 +20,6 @@ export async function POST(request: NextRequest, { params }: { params: { convId:
     const res = await broadcastToConversation(convId, payload)
     return NextResponse.json({ success: true, res })
   } catch (e: unknown) {
-    console.error('[debug] broadcast-update exception', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }
