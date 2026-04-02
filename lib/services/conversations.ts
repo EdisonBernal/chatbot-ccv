@@ -218,7 +218,7 @@ export async function sendMessage(
 
 export async function updateConversationMessageStatus(
   messageId: string,
-  deliveryStatus: 'queued' | 'sent' | 'delivered' | 'read',
+  deliveryStatus: 'queued' | 'sent' | 'delivered' | 'read' | 'failed',
   supabaseClient?: any
 ): Promise<ConversationMessage> {
   const supabase = supabaseClient || (await createClient())
@@ -262,7 +262,7 @@ export async function markConversationMessagesRead(
 
 export async function updateConversationMessageStatusByTwilioSid(
   twilioSid: string,
-  deliveryStatus: 'queued' | 'sent' | 'delivered' | 'read',
+  deliveryStatus: 'queued' | 'sent' | 'delivered' | 'read' | 'failed',
   supabaseClient?: any
 ): Promise<{ success: boolean; error?: any }> {
   const supabase = supabaseClient || (await createClient())

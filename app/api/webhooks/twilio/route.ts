@@ -92,13 +92,13 @@ export async function POST(request: NextRequest) {
       const channelMessageSid = (formData.ChannelMessageSid as string) || ''
 
       if (messageSid && status) {
-        const mappedStatus: 'queued' | 'sent' | 'delivered' | 'read' =
+        const mappedStatus: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' =
           status === 'read'
             ? 'read'
             : status === 'delivered'
             ? 'delivered'
             : status === 'failed' || status === 'undelivered'
-            ? 'sent'  // keep as 'sent' for failed/undelivered (avoid regressing)
+            ? 'failed'
             : status === 'queued'
             ? 'queued'
             : 'sent'

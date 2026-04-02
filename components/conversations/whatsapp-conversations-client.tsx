@@ -49,6 +49,7 @@ import {
   Copy,
   Check,
   LogOut,
+  AlertCircle,
 } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -843,16 +844,21 @@ export function WhatsAppConversationsClient({
                       </p>
                       {msg.sender_type === 'staff' && (
                         <span
+                          title={msg.delivery_status === 'failed' ? 'Error al enviar el mensaje' : undefined}
                           className={cn(
                             'flex items-center gap-1 text-xs font-semibold',
                             msg.delivery_status === 'read'
                               ? 'text-blue-400'
+                              : msg.delivery_status === 'failed'
+                              ? 'text-red-500'
                               : msg.delivery_status === 'queued'
                               ? 'text-amber-500'
                               : 'text-muted-foreground'
                           )}
                         >
-                          {msg.delivery_status === 'queued' ? (
+                          {msg.delivery_status === 'failed' ? (
+                            <AlertCircle className="w-3 h-3" />
+                          ) : msg.delivery_status === 'queued' ? (
                             <Clock className="w-3 h-3" />
                           ) : msg.delivery_status === 'delivered' ? (
                             '✓✓'

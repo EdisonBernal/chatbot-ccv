@@ -101,7 +101,7 @@ export interface Conversation {
   messages?: ConversationMessage[]
 }
 
-export type MessageDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'read'
+export type MessageDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
 
 export interface ConversationMessage {
   id: string
