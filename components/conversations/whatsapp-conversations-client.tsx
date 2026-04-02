@@ -50,6 +50,9 @@ import {
   Check,
   LogOut,
   AlertCircle,
+  Paperclip,
+  X,
+  ImageIcon,
 } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -100,6 +103,9 @@ export function WhatsAppConversationsClient({
   const [contextData, setContextData] = useState<Record<string, string>>({})
   const [isLoadingContext, setIsLoadingContext] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [mediaFile, setMediaFile] = useState<File | null>(null)
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<HTMLDivElement>(null)
@@ -355,6 +361,23 @@ export function WhatsAppConversationsClient({
               }
             })
           })
+          .on('broadcast', { event: 'STATUS_CHANGE' }, (payload) => {
+            const raw: any = payload?.payload ?? payload ?? {}
+            const conversationId = raw.conversation_id
+            const newStatus = raw.status
+            if (!conversationId || !newStatus) return
+
+            // Update conversation list
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === conversationId ? { ...c, status: newStatus } : c
+              )
+            )
+            // Update selected conversation if it's the one that changed
+            setSelectedConversation((prev) =>
+              prev && prev.id === conversationId ? { ...prev, status: newStatus } : prev
+            )
+          })
           .subscribe(() => {})
 
         // Subscribe to currently selected conversation (if any)
@@ -573,18 +596,32 @@ export function WhatsAppConversationsClient({
 
   // Enviar respuesta
   const handleSendReply = async () => {
-    if (!reply.trim() || !selectedConversation) return
+    if (!reply.trim() && !mediaFile) return
+    if (!selectedConversation) return
     setIsSending(true)
     try {
-      const res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: reply.trim() }),
-      })
+      let res: Response
+      if (mediaFile) {
+        const formData = new FormData()
+        formData.append('body', reply.trim())
+        formData.append('media', mediaFile)
+        res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+          method: 'POST',
+          body: formData,
+        })
+      } else {
+        res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: reply.trim() }),
+        })
+      }
       if (res.ok) {
         const newMsg = await res.json()
         setMessages((prev) => dedupeById([...prev, newMsg]))
         setReply('')
+        setMediaFile(null)
+        setMediaPreview(null)
 
         toast.success('Mensaje enviado')
       } else {
@@ -597,12 +634,71 @@ export function WhatsAppConversationsClient({
     }
   }
 
+  // Handle file selection
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // Only accept images
+    if (!file.type.startsWith('image/')) {
+      toast.error('Solo se permiten imágenes')
+      return
+    }
+    // Max 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('La imagen no puede superar 10MB')
+      return
+    }
+    setMediaFile(file)
+    const url = URL.createObjectURL(file)
+    setMediaPreview(url)
+    // Reset the input so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleRemoveMedia = () => {
+    setMediaFile(null)
+    if (mediaPreview) URL.revokeObjectURL(mediaPreview)
+    setMediaPreview(null)
+  }
+
+  // Handle paste from clipboard (Ctrl+V screenshots)
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (!file) return
+        if (file.size > 10 * 1024 * 1024) {
+          toast.error('La imagen no puede superar 10MB')
+          return
+        }
+        setMediaFile(file)
+        const url = URL.createObjectURL(file)
+        setMediaPreview(url)
+        return
+      }
+    }
+  }
+
   // Verificar si hay mensajes nuevos (last_view_at < last_message_at)
   const hasNewMessages = (conv: Conversation) => {
     if (!conv.last_message_at) return false
     if (!conv.last_view_at) return true
     return new Date(conv.last_message_at) > new Date(conv.last_view_at)
   }
+
+  // Escape global para salir del chat
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedConversation) {
+        setSelectedConversation(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedConversation])
 
   return (
     <div className="flex h-[calc(100vh-6rem)] gap-0 overflow-hidden rounded-lg border border-border bg-card">
@@ -891,7 +987,15 @@ export function WhatsAppConversationsClient({
                         : 'bg-muted text-foreground rounded-bl-none'
                     )}
                   >
-                    <p>{msg.message_text}</p>
+                    {msg.media_url && (
+                      <img
+                        src={msg.media_url}
+                        alt="Imagen adjunta"
+                        className="max-w-full rounded mb-1 cursor-pointer"
+                        onClick={() => window.open(msg.media_url!, '_blank')}
+                      />
+                    )}
+                    {msg.message_text && <p>{msg.message_text}</p>}
                     <div className="flex items-center justify-end gap-2 mt-1">
                       <p className="text-xs opacity-70">
                         {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
@@ -933,7 +1037,41 @@ export function WhatsAppConversationsClient({
 
           {/* Input para responder */}
           <div className="px-4 py-3 border-t border-border bg-muted/20">
+            {mediaPreview && (
+              <div className="flex items-center gap-2 mb-2 p-2 bg-muted rounded-md">
+                <img
+                  src={mediaPreview}
+                  alt="Vista previa"
+                  className="w-16 h-16 object-cover rounded"
+                />
+                <span className="text-xs text-muted-foreground flex-1 truncate">{mediaFile?.name}</span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  onClick={handleRemoveMedia}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            )}
             <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/*"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-10 w-10 p-0 shrink-0"
+                onClick={() => fileInputRef.current?.click()}
+                title="Adjuntar imagen"
+              >
+                <Paperclip className="w-4 h-4" />
+              </Button>
               <Textarea
                 placeholder="Escribe un mensaje..."
                 value={reply}
@@ -941,7 +1079,7 @@ export function WhatsAppConversationsClient({
                   setReply(e.target.value)
                 }}
                 onBlur={() => {}}
-
+                onPaste={handlePaste}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && e.ctrlKey) {
                     handleSendReply()
@@ -951,7 +1089,7 @@ export function WhatsAppConversationsClient({
               />
               <Button
                 onClick={handleSendReply}
-                disabled={!reply.trim() || isSending}
+                disabled={(!reply.trim() && !mediaFile) || isSending}
                 className="h-10 w-10 p-0 shrink-0"
               >
                 {isSending ? <Spinner className="w-4 h-4" /> : <Send className="w-4 h-4" />}

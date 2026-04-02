@@ -8,7 +8,7 @@ import {
   clearChatbotSessionState,
   logChatbotExecution,
 } from '@/lib/services/chatbot'
-import { sendMessageWithTwilio, getConversationById } from '@/lib/services/conversations'
+import { sendMessageWithTwilio, getConversationById, broadcastConversationStatusChange } from '@/lib/services/conversations'
 import type { ChatbotConfig, ChatbotStep, ChatbotStepAction } from '@/lib/types'
 
 /** Session expires after 30 minutes of inactivity */
@@ -496,6 +496,13 @@ export class ChatbotEngine {
         .eq('id', this.conversationId)
 
       if (error) throw error
+
+      // Broadcast status change so the UI updates in realtime
+      try {
+        await broadcastConversationStatusChange(this.conversationId, 'en_atencion', this.supabase)
+      } catch {
+        // ignore broadcast failures
+      }
     } catch {
       // ignore
     }

@@ -109,6 +109,7 @@ export interface ConversationMessage {
   sender_type: SenderType
   sender_id: string | null
   message_text: string
+  media_url: string | null
   twilio_sid: string | null
   message_index: number | null
   delivery_status: MessageDeliveryStatus

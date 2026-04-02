@@ -1,4 +1,4 @@
-import { sendMessage, updateConversationMessageStatusByTwilioSid } from '@/lib/services/conversations'
+import { sendMessage, updateConversationMessageStatusByTwilioSid, broadcastConversationStatusChange } from '@/lib/services/conversations'
 import { getChatbotConfigs, clearChatbotSession } from '@/lib/services/chatbot'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
@@ -285,8 +285,9 @@ export async function POST(request: NextRequest) {
         // Update conversation last message
         // If conversation was closed, reset to 'nueva' and clear chatbot session
         // so the chatbot restarts from the welcome step.
-        const newStatus = conv.status === 'cerrada' ? 'nueva' : conv.status
-        if (conv.status === 'cerrada') {
+        const originalStatus = conv.status
+        const newStatus = originalStatus === 'cerrada' ? 'nueva' : originalStatus
+        if (originalStatus === 'cerrada') {
           try {
             await clearChatbotSession(conv.id, writeClient)
           } catch {
@@ -304,17 +305,28 @@ export async function POST(request: NextRequest) {
           })
           .eq('id', conv.id)
 
-        // Run chatbot if configured
-        try {
-          const configs = await getChatbotConfigs(writeClient)
-          const activeConfig = configs.find((cfg: any) => cfg.is_active)
+        // Broadcast status change to UI if it was reset from cerrada to nueva
+        if (originalStatus === 'cerrada') {
+          try {
+            await broadcastConversationStatusChange(conv.id, 'nueva', writeClient)
+          } catch { /* ignore */ }
+        }
 
-          if (activeConfig) {
-            const engine = new ChatbotEngine(conv.id, writeClient)
-            await engine.processMessage(body, activeConfig)
+        // Run chatbot only if conversation is NOT being handled by an agent.
+        // When en_atencion, the chatbot stays inactive so the human agent handles it.
+        // When cerrada and user writes again, status is already reset to 'nueva' above.
+        if (conv.status !== 'en_atencion') {
+          try {
+            const configs = await getChatbotConfigs(writeClient)
+            const activeConfig = configs.find((cfg: any) => cfg.is_active)
+
+            if (activeConfig) {
+              const engine = new ChatbotEngine(conv.id, writeClient)
+              await engine.processMessage(body, activeConfig)
+            }
+          } catch {
+            // chatbot execution error — ignore to not block webhook response
           }
-        } catch {
-          // chatbot execution error — ignore to not block webhook response
         }
       }
 

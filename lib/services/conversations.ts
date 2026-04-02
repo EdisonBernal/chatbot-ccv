@@ -184,25 +184,61 @@ export async function broadcastToConversation(
   }
 }
 
+/**
+ * Broadcast a conversation status change to the global topic so all UI
+ * clients update the conversation status in realtime.
+ */
+export async function broadcastConversationStatusChange(
+  conversationId: string,
+  status: string,
+  supabaseClient?: any,
+): Promise<void> {
+  const supabase = supabaseClient || (await createClient())
+  try {
+    const topic = 'topic:conversations'
+    const channel: any = supabase.channel(topic)
+    const payload = { conversation_id: conversationId, status }
+    try {
+      if (channel && typeof channel.httpSend === 'function') {
+        await channel.httpSend('STATUS_CHANGE', payload)
+      } else if (channel && typeof channel.send === 'function') {
+        const sendResult = channel.send({ type: 'broadcast', event: 'STATUS_CHANGE', payload })
+        const resolved = sendResult && typeof sendResult.then === 'function' ? await sendResult : sendResult
+        if (resolved && typeof resolved.httpSend === 'function') {
+          await resolved.httpSend('STATUS_CHANGE', payload)
+        }
+      }
+    } finally {
+      try { await supabase.removeChannel(channel) } catch { /* ignore */ }
+    }
+  } catch {
+    // ignore broadcast failures
+  }
+}
+
 export async function sendMessage(
   conversationId: string,
   messageText: string,
   senderType: 'patient' | 'staff',
   senderId?: string,
-  supabaseClient?: any
+  supabaseClient?: any,
+  mediaUrl?: string | null,
 ): Promise<ConversationMessage> {
   const supabase = supabaseClient || (await createClient())
+  const insertPayload: any = {
+    conversation_id: conversationId,
+    message_text: messageText,
+    sender_type: senderType,
+    sender_id: senderId || null,
+    // When a staff message is created we'll mark it as 'queued' by default
+    // so the webhook/status callbacks can move it to sent/delivered/read.
+    delivery_status: senderType === 'staff' ? 'queued' : 'read',
+  }
+  if (mediaUrl) insertPayload.media_url = mediaUrl
+
   const { data, error } = await supabase
     .from('conversation_messages')
-    .insert({
-      conversation_id: conversationId,
-      message_text: messageText,
-      sender_type: senderType,
-      sender_id: senderId || null,
-      // When a staff message is created we'll mark it as 'queued' by default
-      // so the webhook/status callbacks can move it to sent/delivered/read.
-      delivery_status: senderType === 'staff' ? 'queued' : 'read',
-    })
+    .insert(insertPayload)
     .select(`*, sender:users(*)`)
     .single()
   if (error) throw error
