@@ -1,7 +1,8 @@
  'use client'
 
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import type { Conversation, ConversationMessage } from '@/lib/types'
+import { useTwilioConversations } from '@/hooks/use-twilio-conversations'
 import { CONVERSATION_STATUS_LABELS, CONVERSATION_STATUS_COLORS } from '@/lib/types'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -111,6 +112,34 @@ export function WhatsAppConversationsClient({
   const lastMessageRef = useRef<HTMLDivElement>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
   const viewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Twilio Conversations SDK: Read Horizon (blue check marks) ──────────
+  // Connects the browser to Twilio via WebSocket so that when the staff reads
+  // messages, the SDK calls advanceLastReadMessageIndex() and Twilio relays
+  // blue checks to the patient's WhatsApp.
+  // Also receives real-time delivery status updates (sent → delivered → read)
+  // from the SDK, updating the UI faster than Supabase Realtime.
+  const handleTwilioDeliveryUpdate = useCallback((messageSid: string, status: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.twilio_sid === messageSid ? { ...m, delivery_status: status as any } : m
+      )
+    )
+  }, [])
+
+  const { isConnected: twilioConnected, advanceReadHorizon } = useTwilioConversations({
+    conversationId: selectedConversation?.id ?? null,
+    enabled: !!selectedConversation,
+    onMessageUpdated: handleTwilioDeliveryUpdate,
+  })
+
+  // When the Twilio SDK connects (async), advance read horizon immediately
+  // so the blue checks reach WhatsApp even if the REST /read call raced ahead.
+  useEffect(() => {
+    if (twilioConnected && selectedConversation) {
+      advanceReadHorizon().catch(() => {})
+    }
+  }, [twilioConnected, selectedConversation?.id, advanceReadHorizon])
 
   // Debounced call to update last_view_at so the server knows the user is
   // still viewing this conversation (keeps unread counts accurate on refresh).
@@ -572,7 +601,11 @@ export function WhatsAppConversationsClient({
         setIsLoadingMessages(false)
 
         // Marcar mensajes como leídos (para chulitos de lectura)
+        // 1) REST API path: immediate server-side update with xTwilioWebhookEnabled
         fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' }).catch(() => {})
+        // 2) SDK path: will fire once the hook connects (async), creating a
+        //    second signal so at least one path triggers the WhatsApp read receipt
+        advanceReadHorizon().catch(() => {})
 
         scheduleScrollToBottom()
 

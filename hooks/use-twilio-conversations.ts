@@ -29,8 +29,18 @@ interface UseTwilioConversationsResult {
  * The SDK batches read reports every ~10 s, so a single call may not transmit
  * immediately.  We call both `setAllMessagesRead()` AND `advanceLastReadMessageIndex()`
  * with the explicit last index.
+ *
+ * CRITICAL: We verify the client's WebSocket connectionState === 'connected'
+ * before calling.  If it's not connected the SDK will silently buffer the call
+ * and it may never actually transmit to Twilio.
  */
-async function markAllRead(conv: Conversation, label: string): Promise<void> {
+async function markAllRead(conv: Conversation, label: string, client?: ConversationsClient | null): Promise<void> {
+  // Guard: verify the SDK WebSocket is truly connected before attempting
+  if (client && client.connectionState !== 'connected') {
+    console.warn(`[useTwilioConversations] markAllRead [${label}] skipped — connectionState=${client.connectionState}`)
+    return
+  }
+
   try {
     // 1) setAllMessagesRead — preferred, handles index internally
     const unread = await conv.setAllMessagesRead()
@@ -183,6 +193,11 @@ export function useTwilioConversations({
         // ── Diagnostic listeners ─────────────────────────────────────────
         client!.on('connectionStateChanged', (state: string) => {
           console.log('[useTwilioConversations] connectionStateChanged →', state)
+          // If the WebSocket reconnects and there was a pending read, fulfil it now
+          if (state === 'connected' && pendingReadRef.current && conversationRef.current) {
+            pendingReadRef.current = false
+            markAllRead(conversationRef.current, 'reconnect', clientRef.current).catch(() => {})
+          }
         })
 
         conv.on('participantUpdated', ({ participant, updateReasons }: any) => {
@@ -194,22 +209,32 @@ export function useTwilioConversations({
         })
 
         // ── Mark all messages as read (init + belt-and-suspenders) ───────
-        pendingReadRef.current = false
-        await markAllRead(conv, 'init')
+        // If the SDK WebSocket is connected, send immediately.
+        // Otherwise mark as pending — the connectionStateChanged handler will retry.
+        if (client!.connectionState === 'connected') {
+          pendingReadRef.current = false
+          await markAllRead(conv, 'init', client)
+        } else {
+          console.warn('[useTwilioConversations] SDK initialized but connectionState=',
+            client!.connectionState, '— deferring markAllRead')
+          pendingReadRef.current = true
+        }
 
         // Schedule a follow-up after 12 s — the SDK batches read reports
         // every ~10 s, so this guarantees at least one full batch cycle
         // with the read report in-flight.
         retryTimerRef.current = setTimeout(async () => {
-          if (!cancelled && conversationRef.current) {
-            await markAllRead(conversationRef.current, 'delayed-retry')
+          if (!cancelled && conversationRef.current && clientRef.current) {
+            await markAllRead(conversationRef.current, 'delayed-retry', clientRef.current)
           }
         }, 12_000)
 
         // ── Conversation event listeners ─────────────────────────────────
         // New incoming message → mark all as read immediately
         conv.on('messageAdded', async () => {
-          await markAllRead(conv, 'messageAdded')
+          if (clientRef.current) {
+            await markAllRead(conv, 'messageAdded', clientRef.current)
+          }
         })
 
         // Delivery updates → propagate to UI
@@ -263,10 +288,17 @@ export function useTwilioConversations({
     const conv = conversationRef.current
     if (!conv) {
       pendingReadRef.current = true
-      console.log('[useTwilioConversations] advanceReadHorizon: SDK not connected, queued as pending')
+      console.log('[useTwilioConversations] advanceReadHorizon: no conversation ref, queued as pending')
       return
     }
-    await markAllRead(conv, 'manual')
+    const cl = clientRef.current
+    if (!cl || cl.connectionState !== 'connected') {
+      pendingReadRef.current = true
+      console.log('[useTwilioConversations] advanceReadHorizon: SDK not connected (state=',
+        cl?.connectionState, '), queued as pending')
+      return
+    }
+    await markAllRead(conv, 'manual', cl)
   }, [])
 
   return { isConnected, error, advanceReadHorizon }

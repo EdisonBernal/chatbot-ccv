@@ -2,6 +2,40 @@ import { markConversationMessagesRead, getConversationById, ensureStaffParticipa
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 
+/**
+ * Direct HTTP call to Twilio REST API to update participant's lastReadMessageIndex.
+ * We bypass the Twilio Node helper library to guarantee the X-Twilio-Webhook-Enabled
+ * header is sent correctly — the helper lib may not map `xTwilioWebhookEnabled` to
+ * the HTTP header properly for service-scoped endpoints.
+ */
+async function advanceReadHorizonDirect(
+  accountSid: string,
+  authToken: string,
+  serviceSid: string,
+  convSid: string,
+  participantSid: string,
+  lastReadMessageIndex: number
+): Promise<{ ok: boolean; status: number; body: any }> {
+  const url = `https://conversations.twilio.com/v1/Services/${serviceSid}/Conversations/${convSid}/Participants/${participantSid}`
+  const auth = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+
+  const params = new URLSearchParams()
+  params.set('LastReadMessageIndex', String(lastReadMessageIndex))
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': auth,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Twilio-Webhook-Enabled': 'true',
+    },
+    body: params.toString(),
+  })
+
+  const body = await res.json().catch(() => ({}))
+  return { ok: res.ok, status: res.status, body }
+}
+
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -10,13 +44,10 @@ export async function POST(
     const { id } = await params
     await markConversationMessagesRead(id)
 
-    // ── REST API fallback: advance Read Horizon with xTwilioWebhookEnabled ──
-    // The frontend SDK also calls setAllMessagesRead(), but the REST API
-    // with xTwilioWebhookEnabled: true explicitly tells Twilio to trigger
-    // all channel-level side effects (including WhatsApp read receipts).
-    //
-    // IMPORTANT: This only triggers a real read receipt if lastReadMessageIndex
-    // actually CHANGES. If it's already at the latest index, it's a no-op.
+    // ── REST API: advance Read Horizon with explicit X-Twilio-Webhook-Enabled header ──
+    // Uses a direct HTTP call (not the Twilio SDK) to guarantee the header is sent.
+    // Without this header, Twilio updates the index internally but does NOT relay
+    // the read receipt to WhatsApp (no blue checks).
     try {
       const supabase = await createClient()
       const conversation = await getConversationById(id, supabase)
@@ -66,30 +97,43 @@ export async function POST(
                   if (staffParticipant) {
                     const currentIndex = staffParticipant.lastReadMessageIndex
                     
-                    // Only update if the index actually needs to advance
-                    // (no-op updates won't trigger WhatsApp read receipts)
                     if (currentIndex === null || currentIndex < lastIndex) {
-                      await client.conversations.v1
-                        .services(serviceSid)
-                        .conversations(convSid)
-                        .participants(staffParticipant.sid)
-                        .update({
-                          lastReadMessageIndex: lastIndex,
-                          xTwilioWebhookEnabled: 'true',
-                        })
+                      console.log(`[read] Advancing read horizon via direct HTTP: convSid=${convSid} identity=${identity} participantSid=${staffParticipant.sid} ${currentIndex} → ${lastIndex}`)
+                      
+                      const result = await advanceReadHorizonDirect(
+                        accountSid,
+                        authToken,
+                        serviceSid,
+                        convSid,
+                        staffParticipant.sid,
+                        lastIndex
+                      )
+
+                      if (result.ok) {
+                        console.log(`[read] ✓ Read horizon advanced — Twilio returned ${result.status}, lastReadMessageIndex=${result.body?.last_read_message_index}`)
+                      } else {
+                        console.error(`[read] ✗ Twilio returned ${result.status}:`, JSON.stringify(result.body))
+                      }
                     } else {
+                      console.log(`[read] Read horizon already at latest: currentIndex=${currentIndex} lastIndex=${lastIndex}`)
                     }
                   } else {
-                    // staff participant not found
+                    console.warn(`[read] Staff participant not found: identity=${identity} convSid=${convSid}`)
                   }
                 } else {
-                  // no messages
+                  console.log('[read] No messages in Twilio conversation')
                 }
-              } catch {
-                // ignore Twilio read horizon errors
+              } catch (twilioErr) {
+                console.error('[read] Twilio read horizon error:', twilioErr)
               }
+            } else {
+              console.warn(`[read] ensureStaffParticipant failed: convSid=${convSid} identity=${identity}`)
             }
+          } else {
+            console.warn('[read] No authenticated user identity')
           }
+        } else {
+          console.warn(`[read] Could not resolve convSid for conversation ${id}`)
         }
       }
     } catch {

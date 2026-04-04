@@ -91,6 +91,8 @@ export async function POST(request: NextRequest) {
       const status = (formData.Status as string) || ''
       const channelMessageSid = (formData.ChannelMessageSid as string) || ''
 
+      console.log(`[webhook] onDeliveryUpdated: MessageSid=${messageSid} Status=${status} ChannelMessageSid=${channelMessageSid} ParticipantSid=${(formData.ParticipantSid as string) || ''}`)
+
       if (messageSid && status) {
         const mappedStatus: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' =
           status === 'read'
@@ -106,13 +108,15 @@ export async function POST(request: NextRequest) {
         try {
           const result = await updateConversationMessageStatusByTwilioSid(messageSid, mappedStatus, writeClient)
           if (!result.success) {
-            // DB update failed
+            console.warn(`[webhook] onDeliveryUpdated: DB update failed for ${messageSid}:`, result.error)
+          } else {
+            console.log(`[webhook] onDeliveryUpdated: DB updated ${messageSid} → ${mappedStatus}`)
           }
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error(`[webhook] onDeliveryUpdated: exception for ${messageSid}:`, err)
         }
       } else {
-        // missing messageSid or status
+        console.warn('[webhook] onDeliveryUpdated: missing messageSid or status')
       }
 
       return new NextResponse(
