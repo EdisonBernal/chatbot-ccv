@@ -103,6 +103,8 @@ export interface Conversation {
 
 export type MessageDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
 
+export type MediaType = 'image' | 'audio' | 'video' | 'document'
+
 export interface ConversationMessage {
   id: string
   conversation_id: string
@@ -110,6 +112,7 @@ export interface ConversationMessage {
   sender_id: string | null
   message_text: string
   media_url: string | null
+  media_type: MediaType | null
   twilio_sid: string | null
   message_index: number | null
   delivery_status: MessageDeliveryStatus

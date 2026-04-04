@@ -54,12 +54,15 @@ import {
   Paperclip,
   X,
   ImageIcon,
+  Mic,
+  Trash2,
 } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client'
+import { AudioPlayer } from '@/components/conversations/audio-player'
 interface WhatsAppConversationsClientProps {
   initialConversations: Conversation[]
 }
@@ -106,6 +109,15 @@ export function WhatsAppConversationsClient({
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [mediaFile, setMediaFile] = useState<File | null>(null)
   const [mediaPreview, setMediaPreview] = useState<string | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingDuration, setRecordingDuration] = useState(0)
+  const [recordingWaveform, setRecordingWaveform] = useState<number[]>([])
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const sendOnStopRef = useRef(false)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const waveformIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -671,19 +683,26 @@ export function WhatsAppConversationsClient({
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    // Only accept images
-    if (!file.type.startsWith('image/')) {
-      toast.error('Solo se permiten imágenes')
+    // Accept images and audio
+    if (!file.type.startsWith('image/') && !file.type.startsWith('audio/')) {
+      toast.error('Solo se permiten imágenes y archivos de audio')
       return
     }
-    // Max 10MB
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error('La imagen no puede superar 10MB')
+    // Max 16MB for audio, 10MB for images
+    const maxSize = file.type.startsWith('audio/') ? 16 * 1024 * 1024 : 10 * 1024 * 1024
+    if (file.size > maxSize) {
+      toast.error(file.type.startsWith('audio/') ? 'El audio no puede superar 16MB' : 'La imagen no puede superar 10MB')
       return
     }
-    setMediaFile(file)
-    const url = URL.createObjectURL(file)
-    setMediaPreview(url)
+    if (file.type.startsWith('audio/')) {
+      // For audio files from file picker, send directly
+      const blob = new Blob([file], { type: file.type })
+      doSendAudio(blob)
+    } else {
+      setMediaFile(file)
+      const url = URL.createObjectURL(file)
+      setMediaPreview(url)
+    }
     // Reset the input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -714,6 +733,156 @@ export function WhatsAppConversationsClient({
       }
     }
   }
+
+  // ── Audio recording handlers ──────────────────────────────────────
+  const startRecording = async () => {
+    try {
+      // Request mic with mono channel — avoids stereo mix issues on some hardware
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 16000,
+        }
+      })
+
+      // Log mic track settings for debug
+      const track = stream.getAudioTracks()[0]
+      console.log('[recording] Mic track:', track.label, track.getSettings())
+
+      // Prefer webm (Chrome native) over mp4
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm'
+      console.log('[recording] Using mimeType:', mimeType)
+
+      // Record raw mic stream — NO AudioContext (it can interfere with browser audio processing)
+      const recorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+      sendOnStopRef.current = false
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        if (waveformIntervalRef.current) {
+          clearInterval(waveformIntervalRef.current)
+          waveformIntervalRef.current = null
+        }
+
+        if (sendOnStopRef.current && audioChunksRef.current.length > 0) {
+          const blob = new Blob(audioChunksRef.current, { type: mimeType })
+          await doSendAudio(blob)
+        }
+        audioChunksRef.current = []
+      }
+
+      recorder.start()
+      setIsRecording(true)
+      setRecordingDuration(0)
+      setRecordingWaveform([])
+
+      // Timer for duration
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((d) => d + 1)
+      }, 1000)
+
+      // Fake waveform (no AudioContext to avoid interference)
+      waveformIntervalRef.current = setInterval(() => {
+        const level = 0.3 + Math.random() * 0.5
+        setRecordingWaveform((prev) => [...prev.slice(-40), level])
+      }, 100)
+    } catch {
+      toast.error('No se pudo acceder al micrófono')
+    }
+  }
+
+  const stopAndSendRecording = () => {
+    sendOnStopRef.current = true
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    setIsRecording(false)
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+  }
+
+  const cancelRecording = () => {
+    sendOnStopRef.current = false
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    setIsRecording(false)
+    setRecordingDuration(0)
+    setRecordingWaveform([])
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+  }
+
+  const doSendAudio = async (blob: Blob) => {
+    if (!selectedConversation) return
+
+    console.log(`[recording] Blob: type=${blob.type}, size=${blob.size} bytes`)
+
+    setIsSending(true)
+    try {
+      const ext = blob.type.includes('ogg') ? 'ogg'
+        : blob.type.includes('mp4') ? 'mp4'
+        : blob.type.includes('mpeg') ? 'mp3'
+        : 'webm'
+      const file = new File([blob], `voice-note-${Date.now()}.${ext}`, { type: blob.type })
+      const formData = new FormData()
+      formData.append('body', '')
+      formData.append('media', file)
+      const res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (res.ok) {
+        const newMsg = await res.json()
+        setMessages((prev) => dedupeById([...prev, newMsg]))
+        toast.success('Audio enviado')
+      } else {
+        toast.error('Error al enviar el audio')
+      }
+    } catch {
+      toast.error('Error al enviar el audio')
+    } finally {
+      setIsSending(false)
+    }
+  }
+
+  const formatRecordingTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  // Cleanup recording on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+      if (waveformIntervalRef.current) clearInterval(waveformIntervalRef.current)
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop() } catch { /* ignore */ }
+      }
+    }
+  }, [])
 
   // Verificar si hay mensajes nuevos (last_view_at < last_message_at)
   const hasNewMessages = (conv: Conversation) => {
@@ -1020,15 +1189,19 @@ export function WhatsAppConversationsClient({
                         : 'bg-muted text-foreground rounded-bl-none'
                     )}
                   >
-                    {msg.media_url && (
+                    {msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) ? (
+                      <div className="mb-1">
+                        <AudioPlayer src={msg.media_url} isStaff={msg.sender_type === 'staff'} />
+                      </div>
+                    ) : msg.media_url ? (
                       <img
                         src={msg.media_url}
                         alt="Imagen adjunta"
                         className="max-w-full rounded mb-1 cursor-pointer"
                         onClick={() => window.open(msg.media_url!, '_blank')}
                       />
-                    )}
-                    {msg.message_text && <p>{msg.message_text}</p>}
+                    ) : null}
+                    {msg.message_text && !(msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) && (msg.message_text === '🎤 Audio')) && <p>{msg.message_text}</p>}
                     <div className="flex items-center justify-end gap-2 mt-1">
                       <p className="text-xs opacity-70">
                         {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
@@ -1070,6 +1243,56 @@ export function WhatsAppConversationsClient({
 
           {/* Input para responder */}
           <div className="px-4 py-3 border-t border-border bg-muted/20">
+            {/* WhatsApp-style recording bar */}
+            {isRecording && (
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10 shrink-0 rounded-full border-2 border-red-500 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
+                  onClick={cancelRecording}
+                  title="Cancelar grabación"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </Button>
+                <div className="flex-1 flex items-center gap-2 bg-background rounded-full px-4 py-2">
+                  <span className="relative flex h-2.5 w-2.5 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                  </span>
+                  <span className="text-sm font-mono font-medium text-foreground min-w-[3ch]">
+                    {formatRecordingTime(recordingDuration)}
+                  </span>
+                  <div className="flex-1 flex items-center justify-center gap-0.5 h-8 overflow-hidden">
+                    {recordingWaveform.map((level, i) => (
+                      <div
+                        key={i}
+                        className="w-1 rounded-full bg-muted-foreground/60 transition-all duration-100"
+                        style={{ height: `${Math.max(4, level * 28)}px` }}
+                      />
+                    ))}
+                    {recordingWaveform.length < 41 && Array.from({ length: 41 - recordingWaveform.length }).map((_, i) => (
+                      <div
+                        key={`empty-${i}`}
+                        className="w-1 rounded-full bg-muted-foreground/20"
+                        style={{ height: '4px' }}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <Button
+                  size="icon"
+                  className="h-10 w-10 shrink-0 rounded-full bg-[#25D366] hover:bg-[#1fb855] text-white"
+                  onClick={stopAndSendRecording}
+                  disabled={isSending}
+                  title="Enviar nota de voz"
+                >
+                  {isSending ? <Spinner className="w-5 h-5" /> : <Send className="w-5 h-5" />}
+                </Button>
+              </div>
+            )}
+            {!isRecording && (
+            <>
             {mediaPreview && (
               <div className="flex items-center gap-2 mb-2 p-2 bg-muted rounded-md">
                 <img
@@ -1091,7 +1314,7 @@ export function WhatsAppConversationsClient({
             <div className="flex gap-2">
               <input
                 type="file"
-                accept="image/*"
+                accept="image/*,audio/*"
                 ref={fileInputRef}
                 className="hidden"
                 onChange={handleFileSelect}
@@ -1127,7 +1350,20 @@ export function WhatsAppConversationsClient({
               >
                 {isSending ? <Spinner className="w-4 h-4" /> : <Send className="w-4 h-4" />}
               </Button>
+              {!reply.trim() && !mediaFile && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10 p-0 shrink-0"
+                  onClick={startRecording}
+                  title="Grabar nota de voz"
+                >
+                  <Mic className="w-4 h-4" />
+                </Button>
+              )}
             </div>
+            </>
+            )}
           </div>
         </div>
       ) : (

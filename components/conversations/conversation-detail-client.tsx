@@ -23,6 +23,7 @@ import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { AudioPlayer } from '@/components/conversations/audio-player'
 
 interface ConversationDetailClientProps {
   conversation: Conversation
@@ -156,7 +157,7 @@ export function ConversationDetailClient({
                 <div
                   key={msg.id}
                   className={cn(
-                    'flex flex-col gap-0.5 max-w-[80%]',
+                    'flex flex-col gap-0.5 max-w-4/5',
                     msg.sender_type === 'staff' ? 'ml-auto items-end' : 'mr-auto items-start'
                   )}
                 >
@@ -168,7 +169,21 @@ export function ConversationDetailClient({
                         : 'bg-muted text-foreground rounded-tl-sm'
                     )}
                   >
-                    {msg.message_text}
+                    {msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) ? (
+                      <div className="mb-1">
+                        <AudioPlayer src={msg.media_url} isStaff={msg.sender_type === 'staff'} />
+                      </div>
+                    ) : msg.media_url ? (
+                      <img
+                        src={msg.media_url}
+                        alt="Imagen adjunta"
+                        className="max-w-full rounded mb-1 cursor-pointer"
+                        onClick={() => window.open(msg.media_url!, '_blank')}
+                      />
+                    ) : null}
+                    {msg.message_text && !(msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) && msg.message_text === '🎤 Audio') && (
+                      <p>{msg.message_text}</p>
+                    )}
                   </div>
                   <span className="text-xs text-muted-foreground px-1">
                     {format(new Date(msg.created_at), 'd MMM, HH:mm', { locale: es })}

@@ -1,4 +1,5 @@
 import { sendMessage, getConversationById, ensureConversationSid, broadcastToConversation } from '@/lib/services/conversations'
+import { convertAudioForWhatsApp } from '@/lib/convert-audio'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
@@ -53,18 +54,36 @@ export async function POST(
       }
     }
 
-    // Upload image to Supabase Storage if present
+    // Upload media to Supabase Storage if present
+    // For audio: convert to MP3 before uploading (reliable format for Twilio Sandbox)
     let mediaUrl: string | null = null
+    let mediaType: string | null = null
     if (mediaFile) {
-      const ext = mediaFile.name.split('.').pop() || 'jpg'
-      const safeName = `${id}/${Date.now()}.${ext}`
       const arrayBuffer = await mediaFile.arrayBuffer()
-      const buffer = Buffer.from(arrayBuffer)
+      let buffer = Buffer.from(arrayBuffer)
+      let uploadContentType = mediaFile.type
+      let ext = mediaFile.name.split('.').pop() || 'bin'
+
+      // Determine media type from MIME
+      if (mediaFile.type.startsWith('image/')) mediaType = 'image'
+      else if (mediaFile.type.startsWith('audio/')) mediaType = 'audio'
+      else if (mediaFile.type.startsWith('video/')) mediaType = 'video'
+      else mediaType = 'document'
+
+      // Convert audio to MP3 before storing (Twilio Sandbox compatible)
+      if (mediaType === 'audio') {
+        const converted = await convertAudioForWhatsApp(buffer, mediaFile.type)
+        buffer = Buffer.from(converted.buffer)
+        uploadContentType = converted.contentType
+        ext = converted.extension
+      }
+
+      const safeName = `${id}/${Date.now()}.${ext}`
 
       const { data: uploadData, error: uploadError } = await writeClient.storage
         .from('chat-media')
         .upload(safeName, buffer, {
-          contentType: mediaFile.type,
+          contentType: uploadContentType,
           upsert: false,
         })
 
@@ -77,8 +96,9 @@ export async function POST(
     }
 
     // Save message locally
-    const messageText = body.trim() || (mediaUrl ? '📷 Imagen' : '')
-    const message = await sendMessage(id, messageText, 'staff', senderDbId, supabase, mediaUrl)
+    const defaultLabel = mediaType === 'audio' ? '🎤 Audio' : mediaType === 'image' ? '📷 Imagen' : mediaUrl ? '📎 Archivo' : ''
+    const messageText = body.trim() || (mediaUrl ? defaultLabel : '')
+    const message = await sendMessage(id, messageText, 'staff', senderDbId, supabase, mediaUrl, mediaType)
 
     // Send via Twilio Conversations API
     const accountSid = process.env.TWILIO_ACCOUNT_SID
@@ -97,69 +117,57 @@ export async function POST(
           const twilio = require('twilio')
           const client = twilio(accountSid, authToken)
 
-          const createPayload: any = {
-            author: user?.id || 'staff',
-            xTwilioWebhookEnabled: 'true',
-          }
-          if (body.trim()) createPayload.body = body.trim()
-          if (mediaUrl) createPayload.mediaSid = undefined // Not needed when using mediaUrl
-          // Twilio Conversations API accepts media via mediaUrl on the message
-          // For WhatsApp, we send the image URL as a media message
-          if (mediaUrl) {
-            // Twilio Conversations: send media via body + media attribute
-            // The Conversations API doesn't directly support mediaUrl in create(),
-            // so we use the REST API with media parameter
-            createPayload.body = body.trim() || undefined
-          }
-
           try {
             let twilioMsg: any
-            if (mediaUrl) {
-              // Use Twilio REST to send media via channel-specific attributes
-              // Twilio Conversations media: upload media first, then attach to message
-              // Simpler approach: send via Programmable Messaging for media, or use media attribute
-              // For Conversations API: we can pass `mediaSid` if we upload to Twilio first
-              // Simplest working approach: use body with media URL (WhatsApp renders link previews)
-              // OR use the Twilio media upload endpoint
+            if (mediaUrl && mediaType === 'audio') {
+              // Audio: use Twilio Messaging API (Conversations MCS doesn't support audio for WhatsApp)
+              const whatsappNumber = process.env.TWILIO_WHATSAPP_NUMBER
+              if (whatsappNumber) {
+                const from = whatsappNumber.startsWith('whatsapp:') ? whatsappNumber : `whatsapp:${whatsappNumber}`
+                const to = conversation.whatsapp_number!.startsWith('whatsapp:')
+                  ? conversation.whatsapp_number!
+                  : `whatsapp:${conversation.whatsapp_number}`
 
-              // Upload media to Twilio Conversations via MCS (Media Content Service)
-              const fetchFn = globalThis.fetch
-
-              const twilioMediaUploadUrl = `https://mcs.us1.twilio.com/v1/Services/${serviceSid}/Media`
+                const msgResult = await client.messages.create({
+                  from,
+                  to,
+                  mediaUrl: [mediaUrl],
+                  ...(body.trim() ? { body: body.trim() } : {}),
+                  statusCallback: `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/twilio`,
+                })
+                twilioMsg = { sid: msgResult.sid, index: null }
+              }
+            } else if (mediaUrl) {
+              // Images/other media: upload to Twilio MCS then send via Conversations API
               const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
-
-              // Fetch the image from our Supabase URL and upload to Twilio MCS
-              const mediaResponse = await fetchFn(mediaUrl)
+              const mediaResponse = await globalThis.fetch(mediaUrl)
               const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer())
-              const mediaBlob = new Blob([mediaBuffer], { type: mediaFile!.type })
 
+              const mediaBlob = new Blob([new Uint8Array(mediaBuffer)], { type: mediaFile!.type })
               const mcsForm = new globalThis.FormData()
               mcsForm.set('Media', mediaBlob, mediaFile!.name)
 
-              const mcsResponse = await fetchFn(twilioMediaUploadUrl, {
-                method: 'POST',
-                headers: { 'Authorization': authHeader },
-                body: mcsForm as any,
-              })
+              const mcsResponse = await globalThis.fetch(
+                `https://mcs.us1.twilio.com/v1/Services/${serviceSid}/Media`,
+                { method: 'POST', headers: { 'Authorization': authHeader }, body: mcsForm as any }
+              )
 
               if (mcsResponse.ok) {
                 const mcsData = await mcsResponse.json() as any
-                const mediaSid = mcsData?.sid
-
-                if (mediaSid) {
+                if (mcsData?.sid) {
                   twilioMsg = await client.conversations.v1
                     .services(serviceSid)
                     .conversations(convSid)
                     .messages.create({
                       author: user?.id || 'staff',
                       body: body.trim() || undefined,
-                      mediaSid,
+                      mediaSid: mcsData.sid,
                       xTwilioWebhookEnabled: 'true',
                     })
                 }
               }
 
-              // Fallback: send as body text if media upload failed
+              // Fallback: send media URL as text
               if (!twilioMsg) {
                 twilioMsg = await client.conversations.v1
                   .services(serviceSid)

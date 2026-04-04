@@ -69,11 +69,45 @@ export async function POST(request: NextRequest) {
     // Detect event type: Conversations API sends EventType field
     const eventType = (formData.EventType as string) || ''
 
-    // ─── Guard: reject Messaging API payloads (SmsSid / SM...) ───
-    // If the request carries a SmsSid but no Conversations EventType,
-    // it comes from Programmable Messaging, not Conversations. Drop it
-    // to prevent duplicate messages.
+    // ─── Messaging API: Status Callback (for audio sent via Messaging API) ───
+    // Audio messages are sent via client.messages.create (Messaging API) because
+    // Conversations MCS doesn't support audio for WhatsApp. The status callbacks
+    // come with SmsSid + MessageStatus but no EventType.
     const smsSid = (formData.SmsSid as string) || (formData.SmsMessageSid as string) || ''
+    const messagingStatus = (formData.MessageStatus as string) || (formData.SmsStatus as string) || ''
+    if (smsSid && !eventType && messagingStatus) {
+      // This is a Messaging API status callback — update delivery status
+      const mappedStatus: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' =
+        messagingStatus === 'read'
+          ? 'read'
+          : messagingStatus === 'delivered'
+          ? 'delivered'
+          : messagingStatus === 'failed' || messagingStatus === 'undelivered'
+          ? 'failed'
+          : messagingStatus === 'queued'
+          ? 'queued'
+          : 'sent'
+
+      console.log(`[webhook] Messaging API status: SID=${smsSid} Status=${messagingStatus} → ${mappedStatus}`)
+
+      try {
+        const result = await updateConversationMessageStatusByTwilioSid(smsSid, mappedStatus, writeClient)
+        if (!result.success) {
+          console.warn(`[webhook] Messaging API status update failed for ${smsSid}:`, result.error)
+        }
+      } catch (err) {
+        console.error(`[webhook] Messaging API status exception for ${smsSid}:`, err)
+      }
+
+      return new NextResponse(
+        `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
+        { status: 200, headers: { 'Content-Type': 'application/xml' } }
+      )
+    }
+
+    // ─── Guard: reject other Messaging API payloads (SmsSid / SM...) ───
+    // If the request carries a SmsSid but no EventType and no MessageStatus,
+    // it comes from Programmable Messaging (e.g. incoming message duplicate). Drop it.
     if (smsSid && !eventType) {
       return new NextResponse(
         `<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>`,
@@ -263,9 +297,210 @@ export async function POST(request: NextRequest) {
           .eq('id', conv.id)
       }
 
-      if (conv && body) {
+      // ── Extract media from Twilio Conversations message ──────────
+      let incomingMediaUrl: string | null = null
+      let incomingMediaType: string | null = null
+      try {
+        const mediaStr = (formData.Media as string) || ''
+        const numMedia = parseInt((formData.NumMedia as string) || '0', 10)
+        const mediaContentType0 = (formData.MediaContentType0 as string) || ''
+        const mediaUrl0 = (formData.MediaUrl0 as string) || ''
+
+        // Also check for MediaSid directly (some Twilio webhook versions send it)
+        const directMediaSid = (formData.MediaSid as string) || ''
+
+        // Log all media-related fields for debugging
+        console.log(`[webhook] Media fields: Media=${mediaStr ? 'present' : 'empty'}, NumMedia=${numMedia}, MediaUrl0=${mediaUrl0 ? 'present' : 'empty'}, MediaSid=${directMediaSid || 'empty'}`)
+
+        // Helper to download from Twilio MCS and upload to Supabase
+        const downloadAndUploadMedia = async (mediaSid: string, contentType: string): Promise<void> => {
+          const accountSid = process.env.TWILIO_ACCOUNT_SID
+          const authToken = process.env.TWILIO_AUTH_TOKEN
+          const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
+          if (!accountSid || !authToken || !serviceSid) return
+
+          const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+          const mcsUrl = `https://mcs.us1.twilio.com/v1/Services/${serviceSid}/Media/${mediaSid}/Content`
+
+          console.log(`[webhook] Downloading media from MCS: ${mediaSid} (${contentType})`)
+          const mediaResp = await globalThis.fetch(mcsUrl, {
+            headers: { 'Authorization': authHeader },
+          })
+
+          if (!mediaResp.ok) {
+            console.error(`[webhook] MCS download failed: ${mediaResp.status}`)
+            return
+          }
+
+          const mediaBuffer = Buffer.from(await mediaResp.arrayBuffer())
+          console.log(`[webhook] Downloaded ${mediaBuffer.length} bytes`)
+
+          const ext = contentType?.includes('ogg') ? 'ogg'
+            : contentType?.includes('mp4') ? 'mp4'
+            : contentType?.includes('mpeg') ? 'mp3'
+            : contentType?.includes('webm') ? 'webm'
+            : contentType?.includes('amr') ? 'amr'
+            : contentType?.includes('png') ? 'png'
+            : contentType?.includes('jpeg') || contentType?.includes('jpg') ? 'jpg'
+            : 'bin'
+          const convId = conv?.id || 'unknown'
+          const safeName = `${convId}/${Date.now()}.${ext}`
+
+          const { data: uploadData, error: uploadError } = await writeClient.storage
+            .from('chat-media')
+            .upload(safeName, mediaBuffer, {
+              contentType: contentType || 'application/octet-stream',
+              upsert: false,
+            })
+
+          if (!uploadError && uploadData?.path) {
+            const { data: urlData } = writeClient.storage
+              .from('chat-media')
+              .getPublicUrl(uploadData.path)
+            incomingMediaUrl = urlData?.publicUrl || null
+            console.log(`[webhook] Media uploaded to Supabase: ${incomingMediaUrl}`)
+          } else if (uploadError) {
+            console.error(`[webhook] Supabase upload error:`, uploadError)
+          }
+        }
+
+        // Classify media type from content-type string
+        const classifyMediaType = (ct: string): string => {
+          if (ct?.startsWith('image/')) return 'image'
+          if (ct?.startsWith('audio/')) return 'audio'
+          if (ct?.startsWith('video/')) return 'video'
+          return 'document'
+        }
+
+        if (mediaStr) {
+          // Conversations API: Media is JSON — can be object or array
+          const mediaData = JSON.parse(mediaStr)
+          const mediaItems = Array.isArray(mediaData) ? mediaData : [mediaData]
+          const first = mediaItems[0]
+
+          if (first) {
+            const mediaSid = first.sid || first.Sid || ''
+            const contentType = first.content_type || first.ContentType || first.content_type || ''
+            console.log(`[webhook] Parsed Media JSON: sid=${mediaSid}, content_type=${contentType}`)
+
+            incomingMediaType = classifyMediaType(contentType)
+            if (mediaSid) {
+              await downloadAndUploadMedia(mediaSid, contentType)
+            }
+          }
+        } else if (directMediaSid) {
+          // Some webhook formats send MediaSid directly
+          // Try to get content type from the Twilio API
+          const accountSid = process.env.TWILIO_ACCOUNT_SID
+          const authToken = process.env.TWILIO_AUTH_TOKEN
+          const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
+          if (accountSid && authToken && serviceSid) {
+            const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+            // Fetch media metadata
+            const metaResp = await globalThis.fetch(
+              `https://mcs.us1.twilio.com/v1/Services/${serviceSid}/Media/${directMediaSid}`,
+              { headers: { 'Authorization': authHeader } }
+            )
+            if (metaResp.ok) {
+              const meta = await metaResp.json() as any
+              const contentType = meta?.content_type || 'application/octet-stream'
+              incomingMediaType = classifyMediaType(contentType)
+              await downloadAndUploadMedia(directMediaSid, contentType)
+            }
+          }
+        } else if (numMedia > 0 && mediaUrl0) {
+          // Legacy Messaging API: MediaUrl0, MediaContentType0
+          incomingMediaType = classifyMediaType(mediaContentType0)
+
+          const accountSid = process.env.TWILIO_ACCOUNT_SID
+          const authToken = process.env.TWILIO_AUTH_TOKEN
+          if (accountSid && authToken) {
+            const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+            const mediaResp = await globalThis.fetch(mediaUrl0, {
+              headers: { 'Authorization': authHeader },
+            })
+            if (mediaResp.ok) {
+              const mediaBuffer = Buffer.from(await mediaResp.arrayBuffer())
+              const ext = mediaContentType0?.includes('ogg') ? 'ogg'
+                : mediaContentType0?.includes('mp4') ? 'mp4'
+                : mediaContentType0?.includes('mpeg') ? 'mp3'
+                : mediaContentType0?.includes('webm') ? 'webm'
+                : mediaContentType0?.includes('amr') ? 'amr'
+                : mediaContentType0?.includes('png') ? 'png'
+                : mediaContentType0?.includes('jpeg') || mediaContentType0?.includes('jpg') ? 'jpg'
+                : 'bin'
+              const convId = conv?.id || 'unknown'
+              const safeName = `${convId}/${Date.now()}.${ext}`
+              const { data: uploadData, error: uploadError } = await writeClient.storage
+                .from('chat-media')
+                .upload(safeName, mediaBuffer, {
+                  contentType: mediaContentType0 || 'application/octet-stream',
+                  upsert: false,
+                })
+              if (!uploadError && uploadData?.path) {
+                const { data: urlData } = writeClient.storage
+                  .from('chat-media')
+                  .getPublicUrl(uploadData.path)
+                incomingMediaUrl = urlData?.publicUrl || null
+              }
+            }
+          }
+        } else {
+          // No media detected — also log all formData keys for investigation
+          const allKeys = Object.keys(formData)
+          const mediaKeys = allKeys.filter(k => /media|content|attachment/i.test(k))
+          if (mediaKeys.length > 0) {
+            console.log(`[webhook] Unhandled media keys:`, mediaKeys.map(k => `${k}=${String(formData[k]).substring(0, 100)}`))
+          }
+        }
+
+        // Fallback: if no media detected yet but body is empty (likely a media-only message like voice note),
+        // try fetching media directly from the Conversations REST API using the messageSid
+        if (!incomingMediaUrl && !body && messageSid && conversationSid) {
+          console.log(`[webhook] No media from formData, trying Conversations REST API for message ${messageSid}`)
+          const accountSid = process.env.TWILIO_ACCOUNT_SID
+          const authToken = process.env.TWILIO_AUTH_TOKEN
+          const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
+          if (accountSid && authToken && serviceSid) {
+            const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+            // List media attached to this conversation message
+            const mediaListUrl = `https://conversations.twilio.com/v1/Services/${serviceSid}/Conversations/${conversationSid}/Messages/${messageSid}/Media`
+            const mediaListResp = await globalThis.fetch(mediaListUrl, {
+              headers: { 'Authorization': authHeader },
+            })
+            if (mediaListResp.ok) {
+              const mediaListData = await mediaListResp.json() as any
+              const mediaItems = mediaListData?.media || []
+              console.log(`[webhook] Conversations API returned ${mediaItems.length} media items`)
+              if (mediaItems.length > 0) {
+                const firstMedia = mediaItems[0]
+                const mediaSid = firstMedia.sid
+                const contentType = firstMedia.content_type || ''
+                incomingMediaType = classifyMediaType(contentType)
+                if (mediaSid) {
+                  await downloadAndUploadMedia(mediaSid, contentType)
+                }
+              }
+            } else {
+              console.error(`[webhook] Conversations media list failed: ${mediaListResp.status}`)
+            }
+          }
+        }
+      } catch (mediaErr) {
+        console.error('[webhook] Error extracting media:', mediaErr)
+      }
+
+      // Determine message text (body may be empty for media-only messages like audio)
+      const hasMedia = !!incomingMediaUrl
+      const defaultMediaLabel = incomingMediaType === 'audio' ? '🎤 Audio'
+        : incomingMediaType === 'image' ? '📷 Imagen'
+        : incomingMediaType === 'video' ? '🎬 Video'
+        : hasMedia ? '📎 Archivo' : ''
+      const messageText = body || (hasMedia ? defaultMediaLabel : '')
+
+      if (conv && (messageText || hasMedia)) {
         // Save incoming message
-        const createdMsg = await sendMessage(conv.id, body, 'patient', undefined, writeClient)
+        const createdMsg = await sendMessage(conv.id, messageText, 'patient', undefined, writeClient, incomingMediaUrl, incomingMediaType)
 
         // Attach twilio_sid and message_index
         if (messageSid || !isNaN(messageIndex)) {
@@ -303,7 +538,7 @@ export async function POST(request: NextRequest) {
         await (writeClient)
           .from('conversations')
           .update({
-            last_message: body,
+            last_message: messageText || body,
             last_message_at: new Date().toISOString(),
             status: newStatus,
           })

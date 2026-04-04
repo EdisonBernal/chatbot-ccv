@@ -106,7 +106,7 @@ export function PatientsClient({ initialPatients, epsList }: PatientsClientProps
               <TableHead>Documento</TableHead>
               <TableHead>Contacto</TableHead>
               <TableHead>EPS</TableHead>
-              <TableHead className="w-[80px]"></TableHead>
+              <TableHead className="w-20"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
