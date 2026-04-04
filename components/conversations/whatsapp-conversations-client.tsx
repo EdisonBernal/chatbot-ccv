@@ -56,6 +56,9 @@ import {
   ImageIcon,
   Mic,
   Trash2,
+  ChevronDown,
+  Reply,
+  Smile,
 } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -63,6 +66,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client'
 import { AudioPlayer } from '@/components/conversations/audio-player'
+import EmojiPicker, { Theme } from 'emoji-picker-react'
 interface WhatsAppConversationsClientProps {
   initialConversations: Conversation[]
 }
@@ -81,6 +85,18 @@ export function WhatsAppConversationsClient({
       out.push(it)
     }
     return out
+  }
+
+  // Merge-upsert: if msg already exists in prev, merge (keeping local fields like replied_message),
+  // otherwise append. This prevents broadcast from discarding rich local data.
+  const upsertMessage = (prev: ConversationMessage[], newMsg: ConversationMessage): ConversationMessage[] => {
+    const idx = prev.findIndex((m) => m.id === newMsg.id)
+    if (idx !== -1) {
+      const updated = [...prev]
+      updated[idx] = { ...updated[idx], ...newMsg, replied_message: newMsg.replied_message || updated[idx].replied_message }
+      return updated
+    }
+    return [...prev, newMsg]
   }
 
   const extractBroadcastMessage = (raw: any) => {
@@ -102,7 +118,6 @@ export function WhatsAppConversationsClient({
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [search, setSearch] = useState('')
   const [reply, setReply] = useState('')
-  const [isSending, setIsSending] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [contextData, setContextData] = useState<Record<string, string>>({})
   const [isLoadingContext, setIsLoadingContext] = useState(false)
@@ -112,6 +127,8 @@ export function WhatsAppConversationsClient({
   const [isRecording, setIsRecording] = useState(false)
   const [recordingDuration, setRecordingDuration] = useState(0)
   const [recordingWaveform, setRecordingWaveform] = useState<number[]>([])
+  const [replyingTo, setReplyingTo] = useState<ConversationMessage | null>(null)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -122,8 +139,63 @@ export function WhatsAppConversationsClient({
   const bottomRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<HTMLDivElement>(null)
+  const messageRefsMap = useRef<Map<string, HTMLDivElement>>(new Map())
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
   const viewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const messagesCacheRef = useRef<Map<string, ConversationMessage[]>>(new Map())
+  const [isPrefetching, setIsPrefetching] = useState(true)
+
+  // ── Prefetch messages for all conversations on mount (WhatsApp-style) ──
+  // This pre-loads all conversations' messages into cache so navigation is instant.
+  useEffect(() => {
+    if (initialConversations.length === 0) {
+      setIsPrefetching(false)
+      return
+    }
+
+    let cancelled = false
+
+    const prefetch = async () => {
+      // Helper to build replied_message references
+      const buildRefs = (msgs: ConversationMessage[]) => {
+        const map = new Map(msgs.map(m => [m.id, m]))
+        for (const m of msgs) {
+          if (m.reply_to_message_id) m.replied_message = map.get(m.reply_to_message_id) || null
+        }
+      }
+
+      // Fetch conversations in small batches to avoid overwhelming the server
+      const batchSize = 5
+      for (let i = 0; i < initialConversations.length; i += batchSize) {
+        if (cancelled) break
+        const batch = initialConversations.slice(i, i + batchSize)
+        await Promise.allSettled(
+          batch.map(async (conv) => {
+            // Skip if already cached (e.g. user clicked a conv before prefetch reached it)
+            if (messagesCacheRef.current.has(conv.id)) return
+            try {
+              const res = await fetch(`/api/conversations/${conv.id}/messages`)
+              if (res.ok && !cancelled) {
+                const msgs: ConversationMessage[] = await res.json()
+                buildRefs(msgs)
+                // Only store if not already cached by a user click
+                if (!messagesCacheRef.current.has(conv.id)) {
+                  messagesCacheRef.current.set(conv.id, msgs)
+                }
+              }
+            } catch {
+              // skip failed prefetch silently
+            }
+          })
+        )
+      }
+      if (!cancelled) setIsPrefetching(false)
+    }
+
+    prefetch()
+    return () => { cancelled = true }
+  }, [])
 
   // ── Twilio Conversations SDK: Read Horizon (blue check marks) ──────────
   // Connects the browser to Twilio via WebSocket so that when the staff reads
@@ -282,8 +354,22 @@ export function WhatsAppConversationsClient({
                   const idx = prev.findIndex((m) => m.id === msg.id)
                   if (idx !== -1) {
                     const updated = [...prev]
-                    updated[idx] = { ...updated[idx], ...msg }
+                    updated[idx] = { ...updated[idx], ...msg, replied_message: updated[idx].replied_message || msg.replied_message }
                     return updated
+                  }
+                  // Check if this broadcast matches an optimistic temp message
+                  if (msg.sender_type === 'staff') {
+                    const tempIdx = prev.findIndex((m) => m.id.startsWith('temp-') && m.message_text === msg.message_text)
+                    if (tempIdx !== -1) {
+                      const updated = [...prev]
+                      updated[tempIdx] = { ...msg, replied_message: updated[tempIdx].replied_message || msg.replied_message }
+                      return updated
+                    }
+                  }
+                  // For new messages, resolve replied_message from existing messages
+                  if (msg.reply_to_message_id && !msg.replied_message) {
+                    const repliedMsg = prev.find((m) => m.id === msg.reply_to_message_id)
+                    if (repliedMsg) msg.replied_message = repliedMsg
                   }
                   
                   const updated = dedupeById([...prev, msg])
@@ -293,7 +379,6 @@ export function WhatsAppConversationsClient({
                   return prev
                 }
               })
-              // Keep last_view_at fresh so unread counts stay 0 on page refresh
               debouncedUpdateView(sel.id)
             }
           })
@@ -309,7 +394,8 @@ export function WhatsAppConversationsClient({
                   const idx = prev.findIndex((m) => m.id === msg.id)
                   if (idx !== -1) {
                     const updated = [...prev]
-                    updated[idx] = { ...updated[idx], ...msg }
+                    // Preserve replied_message from local state
+                    updated[idx] = { ...updated[idx], ...msg, replied_message: updated[idx].replied_message || msg.replied_message }
                     return updated
                   }
                   
@@ -468,8 +554,17 @@ export function WhatsAppConversationsClient({
                   const idx = prev.findIndex((m) => m.id === msg.id)
                   if (idx !== -1) {
                     const updated = [...prev]
-                    updated[idx] = { ...updated[idx], ...msg }
+                    updated[idx] = { ...updated[idx], ...msg, replied_message: updated[idx].replied_message || msg.replied_message }
                     return updated
+                  }
+                  // Check if this broadcast matches an optimistic temp message
+                  if (msg.sender_type === 'staff') {
+                    const tempIdx = prev.findIndex((m) => m.id.startsWith('temp-') && m.message_text === msg.message_text)
+                    if (tempIdx !== -1) {
+                      const updated = [...prev]
+                      updated[tempIdx] = { ...msg, replied_message: updated[tempIdx].replied_message || msg.replied_message }
+                      return updated
+                    }
                   }
                   const updated = dedupeById([...prev, msg])
                   window.setTimeout(() => scheduleScrollToBottom(), 10)
@@ -478,7 +573,6 @@ export function WhatsAppConversationsClient({
                   return prev
                 }
               })
-              // Keep last_view_at fresh so unread counts stay 0 on page refresh
               debouncedUpdateView(sel.id)
             }
           })
@@ -600,82 +694,148 @@ export function WhatsAppConversationsClient({
     c.whatsapp_number.includes(search)
   )
 
+  // Helper to build replied_message references within a messages array
+  const buildReplyRefs = (msgs: ConversationMessage[]) => {
+    const msgMap = new Map(msgs.map(m => [m.id, m]))
+    for (const m of msgs) {
+      if (m.reply_to_message_id) {
+        m.replied_message = msgMap.get(m.reply_to_message_id) || null
+      }
+    }
+  }
+
   // Cargar mensajes cuando se selecciona una conversación
   const handleSelectConversation = async (conv: Conversation) => {
-    setIsLoadingMessages(true)
+    // Instantly show cached messages if available (no spinner)
+    const cached = messagesCacheRef.current.get(conv.id)
+    if (cached) {
+      setMessages(cached)
+      setSelectedConversation(conv)
+      setReplyingTo(null)
+      setShowEmojiPicker(false)
+      setIsLoadingMessages(false)
+      scheduleScrollToBottom()
+    } else {
+      setMessages([])
+      setSelectedConversation(conv)
+      setReplyingTo(null)
+      setShowEmojiPicker(false)
+      setIsLoadingMessages(true)
+    }
+
+    // Mark as read immediately (don't wait for fetch)
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === conv.id
+          ? { ...c, last_view_at: new Date().toISOString(), unread_count: 0 }
+          : c
+      )
+    )
+    fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' }).catch(() => {})
+    fetch(`/api/conversations/${conv.id}/view`, { method: 'POST' }).catch(() => {})
+    advanceReadHorizon().catch(() => {})
+
+    // Fetch fresh messages in background
     try {
       const res = await fetch(`/api/conversations/${conv.id}/messages`)
       if (res.ok) {
-        const msgs = await res.json()
-        setMessages(msgs)
-        setSelectedConversation(conv)
-        // Stop showing spinner BEFORE scrolling so the DOM renders messages
-        setIsLoadingMessages(false)
-
-        // Marcar mensajes como leídos (para chulitos de lectura)
-        // 1) REST API path: immediate server-side update with xTwilioWebhookEnabled
-        fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' }).catch(() => {})
-        // 2) SDK path: will fire once the hook connects (async), creating a
-        //    second signal so at least one path triggers the WhatsApp read receipt
-        advanceReadHorizon().catch(() => {})
-
-        scheduleScrollToBottom()
-
-        // Actualizar last_view_at
-        fetch(`/api/conversations/${conv.id}/view`, { method: 'POST' }).catch(() => {})
-        // Actualizar la conversación en la lista
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.id === conv.id
-              ? { ...c, last_view_at: new Date().toISOString(), unread_count: 0 }
-              : c
-          )
-        )
+        const msgs: ConversationMessage[] = await res.json()
+        buildReplyRefs(msgs)
+        messagesCacheRef.current.set(conv.id, msgs)
+        // Only update if user is still viewing this conversation
+        if (selectedConversationRef.current?.id === conv.id) {
+          setMessages(msgs)
+          setIsLoadingMessages(false)
+          scheduleScrollToBottom()
+        }
       }
     } catch {
-      toast.error('Error al cargar los mensajes')
+      if (!cached) toast.error('Error al cargar los mensajes')
     } finally {
       setIsLoadingMessages(false)
     }
   }
 
-  // Enviar respuesta
+  // Enviar respuesta — optimistic UI: message appears instantly
   const handleSendReply = async () => {
     if (!reply.trim() && !mediaFile) return
     if (!selectedConversation) return
-    setIsSending(true)
+
+    // Capture current values before clearing
+    const currentReply = reply.trim()
+    const currentMediaFile = mediaFile
+    const currentMediaPreview = mediaPreview
+    const currentReplyingTo = replyingTo
+    const convId = selectedConversation.id
+
+    // Build optimistic message
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const optimisticMsg: ConversationMessage = {
+      id: tempId,
+      conversation_id: convId,
+      message_text: currentReply || (currentMediaFile?.type.startsWith('image/') ? '📷 Imagen' : ''),
+      sender_type: 'staff',
+      sender_id: null,
+      media_url: currentMediaFile?.type.startsWith('image/') ? currentMediaPreview : null,
+      media_type: currentMediaFile?.type.startsWith('image/') ? 'image' : null,
+      reply_to_message_id: currentReplyingTo?.id || null,
+      replied_message: currentReplyingTo || null,
+      twilio_sid: null,
+      message_index: null,
+      delivery_status: 'queued',
+      created_at: new Date().toISOString(),
+    }
+
+    // Immediately update UI — clear inputs, show message
+    setMessages((prev) => [...prev, optimisticMsg])
+    setReply('')
+    setMediaFile(null)
+    setMediaPreview(null)
+    setReplyingTo(null)
+    setShowEmojiPicker(false)
+    scheduleScrollToBottom()
+
+    // Send in background — no isSending spinner
     try {
       let res: Response
-      if (mediaFile) {
+      if (currentMediaFile) {
         const formData = new FormData()
-        formData.append('body', reply.trim())
-        formData.append('media', mediaFile)
-        res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+        formData.append('body', currentReply)
+        formData.append('media', currentMediaFile)
+        if (currentReplyingTo) formData.append('replyToMessageId', currentReplyingTo.id)
+        res = await fetch(`/api/conversations/${convId}/reply`, {
           method: 'POST',
           body: formData,
         })
       } else {
-        res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+        res = await fetch(`/api/conversations/${convId}/reply`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: reply.trim() }),
+          body: JSON.stringify({
+            body: currentReply,
+            ...(currentReplyingTo ? { replyToMessageId: currentReplyingTo.id } : {}),
+          }),
         })
       }
       if (res.ok) {
         const newMsg = await res.json()
-        setMessages((prev) => dedupeById([...prev, newMsg]))
-        setReply('')
-        setMediaFile(null)
-        setMediaPreview(null)
-
-        toast.success('Mensaje enviado')
+        if (currentReplyingTo && !newMsg.replied_message) {
+          newMsg.replied_message = currentReplyingTo
+        }
+        // Replace optimistic message with real one
+        setMessages((prev) => prev.map((m) => m.id === tempId ? { ...newMsg, replied_message: newMsg.replied_message || currentReplyingTo } : m))
+        // Update cache
+        if (messagesCacheRef.current.has(convId)) {
+          setMessages((prev) => { messagesCacheRef.current.set(convId, prev); return prev })
+        }
       } else {
+        // Mark optimistic message as failed
+        setMessages((prev) => prev.map((m) => m.id === tempId ? { ...m, delivery_status: 'failed' as const } : m))
         toast.error('Error al enviar el mensaje')
       }
     } catch {
+      setMessages((prev) => prev.map((m) => m.id === tempId ? { ...m, delivery_status: 'failed' as const } : m))
       toast.error('Error al enviar el mensaje')
-    } finally {
-      setIsSending(false)
     }
   }
 
@@ -711,6 +871,45 @@ export function WhatsAppConversationsClient({
     setMediaFile(null)
     if (mediaPreview) URL.revokeObjectURL(mediaPreview)
     setMediaPreview(null)
+  }
+
+  // ── Reply-to-message handler ──────────────────────────────────────
+  const handleReplyToMessage = (msg: ConversationMessage) => {
+    setReplyingTo(msg)
+    setShowEmojiPicker(false)
+    setTimeout(() => textareaRef.current?.focus(), 50)
+  }
+
+  const cancelReplyTo = () => {
+    setReplyingTo(null)
+  }
+
+  // Scroll to original message when clicking on a reply quote
+  const scrollToMessage = (messageId: string) => {
+    const el = messageRefsMap.current.get(messageId)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // Flash highlight
+      el.classList.add('ring-2', 'ring-primary', 'ring-offset-2', 'transition-all')
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-primary', 'ring-offset-2', 'transition-all')
+      }, 1500)
+    }
+  }
+
+  // Get a short preview text for a message (for reply quotes)
+  const getMessagePreview = (msg: ConversationMessage) => {
+    if (msg.media_type === 'audio') return '🎤 Audio'
+    if (msg.media_type === 'image') return '📷 Imagen'
+    if (msg.media_url) return '📎 Archivo'
+    const text = msg.message_text || ''
+    return text.length > 80 ? text.slice(0, 80) + '…' : text
+  }
+
+  // Emoji picker handler
+  const handleEmojiSelect = (emojiData: { emoji: string }) => {
+    setReply((prev) => prev + emojiData.emoji)
+    setTimeout(() => textareaRef.current?.focus(), 50)
   }
 
   // Handle paste from clipboard (Ctrl+V screenshots)
@@ -836,10 +1035,30 @@ export function WhatsAppConversationsClient({
 
   const doSendAudio = async (blob: Blob) => {
     if (!selectedConversation) return
+    const convId = selectedConversation.id
 
-    console.log(`[recording] Blob: type=${blob.type}, size=${blob.size} bytes`)
+    // Build optimistic audio message
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const optimisticMsg: ConversationMessage = {
+      id: tempId,
+      conversation_id: convId,
+      message_text: '🎤 Audio',
+      sender_type: 'staff',
+      sender_id: null,
+      media_url: null,
+      media_type: 'audio',
+      reply_to_message_id: null,
+      replied_message: null,
+      twilio_sid: null,
+      message_index: null,
+      delivery_status: 'queued',
+      created_at: new Date().toISOString(),
+    }
 
-    setIsSending(true)
+    // Show optimistic message immediately
+    setMessages((prev) => [...prev, optimisticMsg])
+    scheduleScrollToBottom()
+
     try {
       const ext = blob.type.includes('ogg') ? 'ogg'
         : blob.type.includes('mp4') ? 'mp4'
@@ -849,21 +1068,24 @@ export function WhatsAppConversationsClient({
       const formData = new FormData()
       formData.append('body', '')
       formData.append('media', file)
-      const res = await fetch(`/api/conversations/${selectedConversation.id}/reply`, {
+      const res = await fetch(`/api/conversations/${convId}/reply`, {
         method: 'POST',
         body: formData,
       })
       if (res.ok) {
         const newMsg = await res.json()
-        setMessages((prev) => dedupeById([...prev, newMsg]))
-        toast.success('Audio enviado')
+        // Replace optimistic with real message (now has media_url for playback)
+        setMessages((prev) => prev.map((m) => m.id === tempId ? newMsg : m))
+        if (messagesCacheRef.current.has(convId)) {
+          setMessages((prev) => { messagesCacheRef.current.set(convId, prev); return prev })
+        }
       } else {
+        setMessages((prev) => prev.map((m) => m.id === tempId ? { ...m, delivery_status: 'failed' as const } : m))
         toast.error('Error al enviar el audio')
       }
     } catch {
+      setMessages((prev) => prev.map((m) => m.id === tempId ? { ...m, delivery_status: 'failed' as const } : m))
       toast.error('Error al enviar el audio')
-    } finally {
-      setIsSending(false)
     }
   }
 
@@ -931,6 +1153,16 @@ export function WhatsAppConversationsClient({
             />
           </div>
         </div>
+
+        {/* Prefetch progress bar */}
+        {isPrefetching && (
+          <div className="px-3 pb-2 flex items-center gap-2">
+            <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+              <div className="h-full bg-primary/60 rounded-full animate-pulse" style={{ width: '100%' }} />
+            </div>
+            <span className="text-[10px] text-muted-foreground whitespace-nowrap">Cargando chats…</span>
+          </div>
+        )}
 
         {/* Lista de conversaciones */}
         <div className="flex-1 overflow-y-auto">
@@ -1175,67 +1407,126 @@ export function WhatsAppConversationsClient({
               messages.map((msg, index) => (
                 <div
                   key={msg.id}
-                  ref={index === messages.length - 1 ? lastMessageRef : undefined}
+                  ref={(el) => {
+                    if (index === messages.length - 1) (lastMessageRef as any).current = el
+                    if (el) messageRefsMap.current.set(msg.id, el)
+                    else messageRefsMap.current.delete(msg.id)
+                  }}
                   className={cn(
-                    'flex',
+                    'flex group',
                     msg.sender_type === 'staff' ? 'justify-end' : 'justify-start'
                   )}
                 >
+                  {/* Message bubble */}
                   <div
                     className={cn(
-                      'max-w-xs px-3 py-2 rounded-lg text-sm wrap-break-words',
+                      'relative max-w-xs px-3 py-2 rounded-lg text-sm wrap-break-words group/msg',
                       msg.sender_type === 'staff'
                         ? 'bg-primary text-primary-foreground rounded-br-none'
                         : 'bg-muted text-foreground rounded-bl-none'
                     )}
                   >
-                    {msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) ? (
-                      <div className="mb-1">
-                        <AudioPlayer src={msg.media_url} isStaff={msg.sender_type === 'staff'} />
-                      </div>
-                    ) : msg.media_url ? (
-                      <img
-                        src={msg.media_url}
-                        alt="Imagen adjunta"
-                        className="max-w-full rounded mb-1 cursor-pointer"
-                        onClick={() => window.open(msg.media_url!, '_blank')}
-                      />
-                    ) : null}
-                    {msg.message_text && !(msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) && (msg.message_text === '🎤 Audio')) && <p>{msg.message_text}</p>}
-                    <div className="flex items-center justify-end gap-2 mt-1">
-                      <p className="text-xs opacity-70">
-                        {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
-                      </p>
-                      {msg.sender_type === 'staff' && (
-                        <span
-                          title={msg.delivery_status === 'failed' ? 'Error al enviar el mensaje' : undefined}
+                    {/* Hover action button — inside bubble, top-right */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
                           className={cn(
-                            'flex items-center gap-1 text-xs font-semibold',
-                            msg.delivery_status === 'read'
-                              ? 'text-blue-400'
-                              : msg.delivery_status === 'failed'
-                              ? 'text-red-500'
-                              : msg.delivery_status === 'queued'
-                              ? 'text-amber-500'
-                              : 'text-muted-foreground'
+                            'absolute top-1 opacity-0 group-hover/msg:opacity-100 transition-opacity',
+                            'h-5 w-5 flex items-center justify-center rounded-full z-10',
+                            msg.sender_type === 'staff'
+                              ? 'right-1 hover:bg-primary-foreground/20 text-primary-foreground/70'
+                              : 'right-1 hover:bg-foreground/10 text-muted-foreground',
                           )}
                         >
-                          {msg.delivery_status === 'failed' ? (
-                            <AlertCircle className="w-3 h-3" />
-                          ) : msg.delivery_status === 'queued' ? (
-                            <Clock className="w-3 h-3" />
-                          ) : msg.delivery_status === 'delivered' ? (
-                            '✓✓'
-                          ) : msg.delivery_status === 'read' ? (
-                            '✓✓'
-                          ) : (
-                            '✓'
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align={msg.sender_type === 'staff' ? 'end' : 'start'} className="w-40">
+                        <DropdownMenuItem onSelect={() => handleReplyToMessage(msg)}>
+                          <Reply className="w-4 h-4 mr-2" />
+                          Responder
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => {
+                          navigator.clipboard.writeText(msg.message_text || '')
+                          toast.success('Texto copiado')
+                        }}>
+                          <Copy className="w-4 h-4 mr-2" />
+                          Copiar
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    {/* Reply quote */}
+                    {msg.replied_message && (
+                        <div
+                          className={cn(
+                            'mb-2 px-2 py-1.5 rounded cursor-pointer border-l-3',
+                            msg.sender_type === 'staff'
+                              ? 'bg-primary-foreground/15 border-primary-foreground/50'
+                              : 'bg-background/50 border-primary/50'
                           )}
-                        </span>
+                          onClick={() => msg.replied_message && scrollToMessage(msg.replied_message.id)}
+                        >
+                          <p className={cn(
+                            'text-[11px] font-semibold mb-0.5',
+                            msg.replied_message.sender_type === 'staff' ? '' : 'text-emerald-400'
+                          )}>
+                            {msg.replied_message.sender_type === 'staff' ? 'Tú' : 'Paciente'}
+                          </p>
+                          <p className={cn(
+                            'text-xs line-clamp-2',
+                            msg.sender_type === 'staff' ? 'opacity-80' : 'opacity-70'
+                          )}>
+                            {getMessagePreview(msg.replied_message)}
+                          </p>
+                        </div>
                       )}
+                      {msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) ? (
+                        <div className="mb-1">
+                          <AudioPlayer src={msg.media_url} isStaff={msg.sender_type === 'staff'} />
+                        </div>
+                      ) : msg.media_url ? (
+                        <img
+                          src={msg.media_url}
+                          alt="Imagen adjunta"
+                          className="max-w-full rounded mb-1 cursor-pointer"
+                          onClick={() => window.open(msg.media_url!, '_blank')}
+                        />
+                      ) : null}
+                      {msg.message_text && !(msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) && (msg.message_text === '🎤 Audio')) && <p>{msg.message_text}</p>}
+                      <div className="flex items-center justify-end gap-2 mt-1">
+                        <p className="text-xs opacity-70">
+                          {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
+                        </p>
+                        {msg.sender_type === 'staff' && (
+                          <span
+                            title={msg.delivery_status === 'failed' ? 'Error al enviar el mensaje' : undefined}
+                            className={cn(
+                              'flex items-center gap-1 text-xs font-semibold',
+                              msg.delivery_status === 'read'
+                                ? 'text-blue-400'
+                                : msg.delivery_status === 'failed'
+                                ? 'text-red-500'
+                                : msg.delivery_status === 'queued'
+                                ? 'text-amber-500'
+                                : 'text-muted-foreground'
+                            )}
+                          >
+                            {msg.delivery_status === 'failed' ? (
+                              <AlertCircle className="w-3 h-3" />
+                            ) : msg.delivery_status === 'queued' ? (
+                              <Clock className="w-3 h-3" />
+                            ) : msg.delivery_status === 'delivered' ? (
+                              '✓✓'
+                            ) : msg.delivery_status === 'read' ? (
+                              '✓✓'
+                            ) : (
+                              '✓'
+                            )}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
               ))
             )}
             <div ref={bottomRef} />
@@ -1284,15 +1575,35 @@ export function WhatsAppConversationsClient({
                   size="icon"
                   className="h-10 w-10 shrink-0 rounded-full bg-[#25D366] hover:bg-[#1fb855] text-white"
                   onClick={stopAndSendRecording}
-                  disabled={isSending}
                   title="Enviar nota de voz"
                 >
-                  {isSending ? <Spinner className="w-5 h-5" /> : <Send className="w-5 h-5" />}
+                  <Send className="w-5 h-5" />
                 </Button>
               </div>
             )}
             {!isRecording && (
             <>
+            {/* Reply-to preview bar */}
+            {replyingTo && (
+              <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-muted rounded-md border-l-3 border-primary">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-primary">
+                    {replyingTo.sender_type === 'staff' ? 'Tú' : (selectedConversation?.patient?.full_name || 'Paciente')}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {getMessagePreview(replyingTo)}
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  onClick={cancelReplyTo}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            )}
             {mediaPreview && (
               <div className="flex items-center gap-2 mb-2 p-2 bg-muted rounded-md">
                 <img
@@ -1311,6 +1622,20 @@ export function WhatsAppConversationsClient({
                 </Button>
               </div>
             )}
+            {/* Emoji picker */}
+            {showEmojiPicker && (
+              <div className="mb-2">
+                <EmojiPicker
+                  onEmojiClick={handleEmojiSelect}
+                  theme={Theme.AUTO}
+                  width="100%"
+                  height={350}
+                  searchPlaceHolder="Buscar emoji..."
+                  previewConfig={{ showPreview: false }}
+                  lazyLoadEmojis
+                />
+              </div>
+            )}
             <div className="flex gap-2">
               <input
                 type="file"
@@ -1323,12 +1648,22 @@ export function WhatsAppConversationsClient({
                 variant="ghost"
                 size="icon"
                 className="h-10 w-10 p-0 shrink-0"
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                title="Emojis"
+              >
+                <Smile className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-10 w-10 p-0 shrink-0"
                 onClick={() => fileInputRef.current?.click()}
                 title="Adjuntar imagen"
               >
                 <Paperclip className="w-4 h-4" />
               </Button>
               <Textarea
+                ref={textareaRef}
                 placeholder="Escribe un mensaje..."
                 value={reply}
                 onChange={(e) => {
@@ -1341,14 +1676,15 @@ export function WhatsAppConversationsClient({
                     handleSendReply()
                   }
                 }}
+                onFocus={() => setShowEmojiPicker(false)}
                 className="min-h-10 max-h-24 text-sm resize-none"
               />
               <Button
                 onClick={handleSendReply}
-                disabled={(!reply.trim() && !mediaFile) || isSending}
+                disabled={!reply.trim() && !mediaFile}
                 className="h-10 w-10 p-0 shrink-0"
               >
-                {isSending ? <Spinner className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+                <Send className="w-4 h-4" />
               </Button>
               {!reply.trim() && !mediaFile && (
                 <Button

@@ -14,15 +14,18 @@ export async function POST(
     // Support both JSON and FormData (when images are attached)
     let body = ''
     let mediaFile: File | null = null
+    let replyToMessageId: string | null = null
     const contentType = request.headers.get('content-type') || ''
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await request.formData()
       body = (formData.get('body') as string) || ''
       mediaFile = formData.get('media') as File | null
+      replyToMessageId = (formData.get('replyToMessageId') as string) || null
     } else {
       const json = await request.json()
       body = json.body || ''
+      replyToMessageId = json.replyToMessageId || null
     }
 
     if (!body.trim() && !mediaFile) {
@@ -98,7 +101,17 @@ export async function POST(
     // Save message locally
     const defaultLabel = mediaType === 'audio' ? '🎤 Audio' : mediaType === 'image' ? '📷 Imagen' : mediaUrl ? '📎 Archivo' : ''
     const messageText = body.trim() || (mediaUrl ? defaultLabel : '')
-    const message = await sendMessage(id, messageText, 'staff', senderDbId, supabase, mediaUrl, mediaType)
+    const message = await sendMessage(id, messageText, 'staff', senderDbId, supabase, mediaUrl, mediaType, replyToMessageId)
+
+    // If replying to a message, fetch the replied message for the response
+    if (replyToMessageId) {
+      const { data: repliedMsg } = await writeClient
+        .from('conversation_messages')
+        .select('id, message_text, sender_type, media_type, media_url')
+        .eq('id', replyToMessageId)
+        .single()
+      if (repliedMsg) (message as any).replied_message = repliedMsg
+    }
 
     // Send via Twilio Conversations API
     const accountSid = process.env.TWILIO_ACCOUNT_SID

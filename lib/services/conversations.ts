@@ -224,6 +224,7 @@ export async function sendMessage(
   supabaseClient?: any,
   mediaUrl?: string | null,
   mediaType?: string | null,
+  replyToMessageId?: string | null,
 ): Promise<ConversationMessage> {
   const supabase = supabaseClient || (await createClient())
   const insertPayload: any = {
@@ -237,6 +238,7 @@ export async function sendMessage(
   }
   if (mediaUrl) insertPayload.media_url = mediaUrl
   if (mediaType) insertPayload.media_type = mediaType
+  if (replyToMessageId) insertPayload.reply_to_message_id = replyToMessageId
 
   const { data, error } = await supabase
     .from('conversation_messages')

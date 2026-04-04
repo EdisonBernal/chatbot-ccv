@@ -113,11 +113,13 @@ export interface ConversationMessage {
   message_text: string
   media_url: string | null
   media_type: MediaType | null
+  reply_to_message_id: string | null
   twilio_sid: string | null
   message_index: number | null
   delivery_status: MessageDeliveryStatus
   created_at: string
   sender?: User
+  replied_message?: ConversationMessage | null
 }
 
 export interface SystemActivityLog {
