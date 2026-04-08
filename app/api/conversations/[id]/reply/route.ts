@@ -5,6 +5,49 @@ import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 
+/**
+ * Upload media to WhatsApp's Media API and return a media_id.
+ * Using the Media API (instead of link) ensures reliable delivery on all devices,
+ * especially iPhone which can show "audio not available" with link-based delivery.
+ */
+async function uploadMediaToWhatsApp(
+  buffer: Buffer,
+  mimeType: string,
+  phoneNumberId: string,
+  accessToken: string
+): Promise<string | null> {
+  try {
+    // WhatsApp Media API expects plain audio/ogg, not audio/ogg; codecs=opus
+    const uploadMime = mimeType.split(';')[0].trim()
+    const blob = new Blob([new Uint8Array(buffer)], { type: uploadMime })
+    const formData = new FormData()
+    formData.append('messaging_product', 'whatsapp')
+    formData.append('type', uploadMime)
+    formData.append('file', blob, `audio.${uploadMime.includes('ogg') ? 'ogg' : 'mp3'}`)
+
+    const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/media`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: formData,
+    })
+
+    if (resp.ok) {
+      const data = await resp.json() as any
+      const mediaId = data?.id || null
+      if (mediaId) console.log(`[reply] WhatsApp media uploaded: ${mediaId}`)
+      return mediaId
+    } else {
+      console.error('[reply] WA media upload failed:', resp.status, await resp.text())
+      return null
+    }
+  } catch (err) {
+    console.error('[reply] WA media upload error:', err)
+    return null
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -61,6 +104,8 @@ export async function POST(
     // Upload media to Supabase Storage if present
     let mediaUrl: string | null = null
     let mediaType: string | null = null
+    let audioBuffer: Buffer | null = null       // Keep converted audio for WhatsApp Media API upload
+    let audioContentType: string | null = null
     if (mediaFile) {
       const arrayBuffer = await mediaFile.arrayBuffer()
       let buffer = Buffer.from(arrayBuffer)
@@ -73,12 +118,14 @@ export async function POST(
       else if (mediaFile.type.startsWith('video/')) mediaType = 'video'
       else mediaType = 'document'
 
-      // Convert audio to MP3 before storing (WhatsApp compatible)
+      // Convert audio to OGG Opus before storing (WhatsApp compatible)
       if (mediaType === 'audio') {
         const converted = await convertAudioForWhatsApp(buffer, mediaFile.type)
         buffer = Buffer.from(converted.buffer)
         uploadContentType = converted.contentType
         ext = converted.extension
+        audioBuffer = buffer
+        audioContentType = converted.contentType
       }
 
       const safeName = `${id}/${Date.now()}.${ext}`
@@ -131,6 +178,18 @@ export async function POST(
           let waMessageId: string | null = null
 
           if (mediaUrl && mediaType === 'audio') {
+            // Upload audio directly to WhatsApp Media API for reliable delivery
+            // (link-based audio fails on iPhone: "este audio ya no está disponible")
+            let audioPayload: Record<string, any> = { link: mediaUrl } // fallback to link
+            if (audioBuffer && audioContentType) {
+              const waMediaId = await uploadMediaToWhatsApp(audioBuffer, audioContentType, phoneNumberId!, accessToken!)
+              if (waMediaId) {
+                audioPayload = { id: waMediaId }
+              } else {
+                console.warn('[reply] WA media upload failed, falling back to link')
+              }
+            }
+
             const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
               method: 'POST',
               headers: {
@@ -142,7 +201,7 @@ export async function POST(
                 recipient_type: 'individual',
                 to: digits,
                 type: 'audio',
-                audio: { link: mediaUrl },
+                audio: { ...audioPayload, voice: true },
                 ...(replyWamid ? { context: { message_id: replyWamid } } : {}),
               }),
             })

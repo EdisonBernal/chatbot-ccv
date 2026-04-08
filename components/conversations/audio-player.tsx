@@ -7,11 +7,13 @@ import { cn } from '@/lib/utils'
 interface AudioPlayerProps {
   src: string
   isStaff?: boolean
+  onPlayed?: () => void
 }
 
-export function AudioPlayer({ src, isStaff = false }: AudioPlayerProps) {
+export function AudioPlayer({ src, isStaff = false, onPlayed }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const playedRef = useRef(false)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [waveformBars] = useState(() =>
@@ -65,8 +67,12 @@ export function AudioPlayer({ src, isStaff = false }: AudioPlayerProps) {
     } else {
       audio.play().catch(() => {})
       setIsPlaying(true)
+      if (!playedRef.current && onPlayed) {
+        playedRef.current = true
+        onPlayed()
+      }
     }
-  }, [isPlaying])
+  }, [isPlaying, onPlayed])
 
   const handleBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const audio = audioRef.current

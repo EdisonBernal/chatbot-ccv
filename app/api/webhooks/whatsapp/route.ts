@@ -165,6 +165,17 @@ export async function POST(request: NextRequest) {
 
         // ── Status updates (sent, delivered, read, failed) ────────────
         if (value.statuses && Array.isArray(value.statuses)) {
+          // Atomic priority guard: only allow upgrading status, never downgrading.
+          // The WHERE clause includes delivery_status IN (allowed_previous) so 
+          // concurrent webhooks can't race past each other.
+          const ALLOWED_PREVIOUS: Record<string, string[]> = {
+            queued: [],                                  // never downgrade to queued
+            sent:   ['queued'],
+            delivered: ['queued', 'sent'],
+            read:   ['queued', 'sent', 'delivered'],
+            failed: ['queued', 'sent', 'delivered', 'read', 'failed'], // failed always applies
+          }
+
           for (const status of value.statuses) {
             const waMessageId = status.id // wamid.xxx
             const statusName = status.status // sent, delivered, read, failed
@@ -179,12 +190,31 @@ export async function POST(request: NextRequest) {
             console.log(`[wa-webhook] Status update: ${waMessageId} → ${mappedStatus}`)
 
             if (waMessageId) {
-              // Helper: try to update and broadcast
+              // Helper: atomically update status only if it's an upgrade
               const tryStatusUpdate = async (): Promise<boolean> => {
+                const allowed = ALLOWED_PREVIOUS[mappedStatus] || []
+
+                // If no allowed previous states (e.g. queued), skip entirely
+                if (allowed.length === 0) {
+                  // But first check if the message exists at all (for retry logic)
+                  const { data: exists } = await writeClient
+                    .from('conversation_messages')
+                    .select('id')
+                    .eq('twilio_sid', waMessageId)
+                    .maybeSingle()
+                  if (exists) {
+                    console.log(`[wa-webhook] Skipping ${waMessageId}: → ${mappedStatus} (no upgrade possible)`)
+                    return true
+                  }
+                  return false // message not found
+                }
+
+                // Atomic: UPDATE only if current status is in the allowed list
                 const { data, error } = await writeClient
                   .from('conversation_messages')
                   .update({ delivery_status: mappedStatus })
                   .eq('twilio_sid', waMessageId)
+                  .in('delivery_status', allowed)
                   .select('*, sender:users(*)')
                   .maybeSingle()
 
@@ -198,7 +228,20 @@ export async function POST(request: NextRequest) {
                   await broadcastToConversation(data.conversation_id, data, writeClient, 'UPDATE').catch(() => {})
                   return true
                 }
-                return false // no match
+
+                // No rows updated: either message doesn't exist, or status wasn't upgradeable.
+                // Check if message exists to distinguish the two cases.
+                const { data: exists } = await writeClient
+                  .from('conversation_messages')
+                  .select('id, delivery_status')
+                  .eq('twilio_sid', waMessageId)
+                  .maybeSingle()
+
+                if (exists) {
+                  console.log(`[wa-webhook] Skipping ${waMessageId}: ${exists.delivery_status} → ${mappedStatus} (not an upgrade)`)
+                  return true // message exists, just already at equal or higher status
+                }
+                return false // message not found yet
               }
 
               try {

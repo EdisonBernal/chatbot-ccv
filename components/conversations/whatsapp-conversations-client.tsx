@@ -1478,7 +1478,17 @@ export function WhatsAppConversationsClient({
                       )}
                       {msg.media_url && (msg.media_type === 'audio' || msg.media_url.match(/\.(ogg|mp3|m4a|wav|webm|amr|opus)(\?|$)/i)) ? (
                         <div className="mb-1">
-                          <AudioPlayer src={msg.media_url} isStaff={msg.sender_type === 'staff'} />
+                          <AudioPlayer
+                            src={msg.media_url}
+                            isStaff={msg.sender_type === 'staff'}
+                            onPlayed={msg.sender_type === 'patient' && msg.id ? () => {
+                              fetch(`/api/conversations/${msg.conversation_id}/played`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ messageId: msg.id }),
+                              }).catch(() => {})
+                            } : undefined}
+                          />
                         </div>
                       ) : msg.media_url ? (
                         <img

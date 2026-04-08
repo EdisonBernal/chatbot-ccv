@@ -479,7 +479,7 @@ async function sendWhatsAppAudioMessage(
       recipient_type: 'individual',
       to: digits,
       type: 'audio',
-      audio: { link: audioUrl },
+      audio: { link: audioUrl, voice: true },
     }),
   })
 

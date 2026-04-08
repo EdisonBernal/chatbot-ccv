@@ -24,7 +24,7 @@ export async function POST(
         const readClient = adminSupabase || supabase
 
         // Get recent patient messages that have a WhatsApp message ID
-        const { data: recentMsgs } = await readClient
+        const { data: recentMsgs, error: queryError } = await readClient
           .from('conversation_messages')
           .select('twilio_sid')
           .eq('conversation_id', id)
@@ -33,11 +33,16 @@ export async function POST(
           .order('created_at', { ascending: false })
           .limit(10)
 
+        if (queryError) {
+          console.error(`[read] DB query error for conversation ${id}:`, queryError)
+        }
+
         if (recentMsgs?.length) {
           // Send read receipt for the most recent message (WhatsApp marks all prior as read too)
           const lastWaId = recentMsgs[0].twilio_sid
           if (lastWaId) {
-            await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+            console.log(`[read] Sending read receipt for wamid=${lastWaId} (conv=${id})`)
+            const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${accessToken}`,
@@ -49,11 +54,19 @@ export async function POST(
                 message_id: lastWaId,
               }),
             })
+            if (!resp.ok) {
+              const errBody = await resp.text().catch(() => '')
+              console.error(`[read] WA read receipt failed: ${resp.status} ${errBody}`)
+            } else {
+              console.log(`[read] Read receipt sent successfully for wamid=${lastWaId}`)
+            }
           }
+        } else {
+          console.log(`[read] No patient messages with twilio_sid for conversation ${id}`)
         }
       }
-    } catch {
-      // ignore — read receipt is best-effort
+    } catch (err) {
+      console.error('[read] Read receipt error:', err)
     }
 
     return NextResponse.json({ status: 'ok' })
