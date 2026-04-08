@@ -558,6 +558,11 @@ export function WhatsAppConversationsClient({
                       return updated
                     }
                   }
+                  // For new messages, resolve replied_message from existing messages
+                  if (msg.reply_to_message_id && !msg.replied_message) {
+                    const repliedMsg = prev.find((m) => m.id === msg.reply_to_message_id)
+                    if (repliedMsg) msg.replied_message = repliedMsg
+                  }
                   const updated = dedupeById([...prev, msg])
                   window.setTimeout(() => scheduleScrollToBottom(), 10)
                   return updated
