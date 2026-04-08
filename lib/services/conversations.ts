@@ -196,7 +196,7 @@ export async function broadcastConversationStatusChange(
   const supabase = supabaseClient || (await createClient())
   try {
     const topic = 'topic:conversations'
-    const channel: any = supabase.channel(topic)
+    const channel: any = supabase.channel(topic, { config: { private: true } })
     const payload = { conversation_id: conversationId, status }
     try {
       if (channel && typeof channel.httpSend === 'function') {
@@ -213,6 +213,43 @@ export async function broadcastConversationStatusChange(
     }
   } catch {
     // ignore broadcast failures
+  }
+}
+
+/**
+ * Broadcast that a new conversation was created so all UI clients can fetch it.
+ */
+export async function broadcastNewConversation(
+  conversationId: string,
+  supabaseClient?: any,
+): Promise<void> {
+  const supabase = supabaseClient || (await createClient())
+  try {
+    const topic = 'topic:conversations'
+    const channel: any = supabase.channel(topic, { config: { private: true } })
+    const payload = { conversation_id: conversationId }
+    console.log(`[broadcast] NEW_CONVERSATION → ${topic} (private) convId=${conversationId}`)
+    try {
+      if (channel && typeof channel.httpSend === 'function') {
+        await channel.httpSend('NEW_CONVERSATION', payload)
+        console.log(`[broadcast] NEW_CONVERSATION sent via httpSend`)
+      } else if (channel && typeof channel.send === 'function') {
+        const sendResult = channel.send({ type: 'broadcast', event: 'NEW_CONVERSATION', payload })
+        const resolved = sendResult && typeof sendResult.then === 'function' ? await sendResult : sendResult
+        if (resolved && typeof resolved.httpSend === 'function') {
+          await resolved.httpSend('NEW_CONVERSATION', payload)
+          console.log(`[broadcast] NEW_CONVERSATION sent via resolved.httpSend`)
+        } else {
+          console.log(`[broadcast] NEW_CONVERSATION sent via channel.send`)
+        }
+      } else {
+        console.warn(`[broadcast] No httpSend or send method on channel`)
+      }
+    } finally {
+      try { await supabase.removeChannel(channel) } catch { /* ignore */ }
+    }
+  } catch (err) {
+    console.error(`[broadcast] NEW_CONVERSATION failed:`, err)
   }
 }
 
@@ -331,178 +368,177 @@ export async function updateConversationMessageStatusByTwilioSid(
 }
 
 /**
- * Helper: get or create a Twilio Conversations client.
+ * Send a text message to a WhatsApp number via the WhatsApp Cloud API.
  */
-function getTwilioClient() {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID
-  const authToken = process.env.TWILIO_AUTH_TOKEN
-  if (!accountSid || !authToken) return null
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const twilio = require('twilio')
-  return twilio(accountSid, authToken)
+async function sendWhatsAppCloudMessage(
+  to: string,
+  text: string
+): Promise<{ waMessageId: string | null }> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
+  if (!phoneNumberId || !accessToken) return { waMessageId: null }
+
+  // Normalize: remove whatsapp: prefix if present, ensure + prefix
+  const normalized = to.replace(/^whatsapp:/i, '').trim()
+  const withPlus = normalized.startsWith('+') ? normalized : `+${normalized}`
+  // WhatsApp Cloud API wants digits only (no +)
+  const digits = withPlus.replace(/^\+/, '')
+
+  const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: digits,
+      type: 'text',
+      text: { body: text },
+    }),
+  })
+
+  if (!resp.ok) {
+    const errData = await resp.json().catch(() => ({}))
+    console.error('[whatsapp] Send failed:', resp.status, errData)
+    return { waMessageId: null }
+  }
+
+  const data = await resp.json() as any
+  const waMessageId = data?.messages?.[0]?.id || null
+  return { waMessageId }
 }
 
 /**
- * Given a local conversation, ensure it has a valid conversation_sid.
- * If the conversation_sid is missing or stale (404 from Twilio),
- * look it up by participant phone or create a new Twilio Conversation.
+ * Send an image message via WhatsApp Cloud API.
+ * If imageUrl is a public URL, send by link. Otherwise upload media first.
  */
-export async function ensureConversationSid(
-  conversationId: string,
-  whatsappNumber: string,
-  supabaseClient?: any
-): Promise<string | null> {
-  const supabase = supabaseClient || (await createClient())
+async function sendWhatsAppImageMessage(
+  to: string,
+  imageUrl: string,
+  caption?: string
+): Promise<{ waMessageId: string | null }> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
+  if (!phoneNumberId || !accessToken) return { waMessageId: null }
 
-  // Check if we already have a conversation_sid stored
-  const { data: conv } = await supabase
-    .from('conversations')
-    .select('conversation_sid')
-    .eq('id', conversationId)
-    .single()
+  const normalized = to.replace(/^whatsapp:/i, '').trim()
+  const digits = (normalized.startsWith('+') ? normalized : `+${normalized}`).replace(/^\+/, '')
 
-  const client = getTwilioClient()
-  if (!client) return null
+  const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: digits,
+      type: 'image',
+      image: {
+        link: imageUrl,
+        ...(caption ? { caption } : {}),
+      },
+    }),
+  })
 
-  const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
-  if (!serviceSid) return null
-
-  // If we have a stored SID, validate it against Twilio
-  if (conv?.conversation_sid) {
-    try {
-      const existing = await client.conversations.v1
-        .services(serviceSid)
-        .conversations(conv.conversation_sid)
-        .fetch()
-      // If it still exists and is active, use it
-      if (existing && existing.state !== 'closed') {
-        return conv.conversation_sid
-      }
-      // Conversation exists but is closed — treat as stale
-    } catch {
-      // ignore — stale or invalid SID
-    }
-    // Clear the stale SID from DB
-    const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
-      ? (await import('@supabase/supabase-js')).createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.SUPABASE_SERVICE_ROLE_KEY
-        )
-      : null
-    await (adminSupabase || supabase)
-      .from('conversations')
-      .update({ conversation_sid: null })
-      .eq('id', conversationId)
+  if (!resp.ok) {
+    const errData = await resp.json().catch(() => ({}))
+    console.error('[whatsapp] Send image failed:', resp.status, errData)
+    return { waMessageId: null }
   }
 
-  // Normalize the WhatsApp address for participant binding
-  const normalizedPhone = whatsappNumber.replace(/^whatsapp:/i, '').trim()
-  const withPlus = normalizedPhone.startsWith('+') ? normalizedPhone : `+${normalizedPhone}`
-  const participantAddress = `whatsapp:${withPlus}`
-
-  try {
-    // Try to find an existing conversation by listing participants with this address.
-    // Twilio auto-creates conversations when the sandbox is in auto-create mode,
-    // so there may already be one from the first inbound message.
-    const participants = await client.conversations.v1
-      .services(serviceSid)
-      .participantConversations.list({ address: participantAddress, limit: 5 })
-
-    // Pick the most recent active conversation
-    const active = participants.find(
-      (p: any) => p.conversationState === 'active'
-    )
-    if (active) {
-      const sid = active.conversationSid
-      // Persist to DB
-      const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
-        ? (await import('@supabase/supabase-js')).createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
-          )
-        : null
-      await (adminSupabase || supabase)
-        .from('conversations')
-        .update({ conversation_sid: sid })
-        .eq('id', conversationId)
-      return sid
-    }
-
-    // No existing conversation — create one
-    const newConv = await client.conversations.v1
-      .services(serviceSid)
-      .conversations.create({ friendlyName: `wa-${conversationId}` })
-
-    // Add the WhatsApp participant
-    await client.conversations.v1
-      .services(serviceSid)
-      .conversations(newConv.sid)
-      .participants.create({
-        'messagingBinding.address': participantAddress,
-        'messagingBinding.proxyAddress': process.env.TWILIO_WHATSAPP_NUMBER?.startsWith('whatsapp:')
-          ? process.env.TWILIO_WHATSAPP_NUMBER
-          : `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-      })
-
-    // Persist to DB
-    const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
-      ? (await import('@supabase/supabase-js')).createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.SUPABASE_SERVICE_ROLE_KEY
-        )
-      : null
-    await (adminSupabase || supabase)
-      .from('conversations')
-      .update({ conversation_sid: newConv.sid })
-      .eq('id', conversationId)
-
-    return newConv.sid
-  } catch {
-    return null
-  }
+  const data = await resp.json() as any
+  return { waMessageId: data?.messages?.[0]?.id || null }
 }
 
 /**
- * Ensure that a staff/chat-based user is added as a participant to the Twilio
- * Conversation. This is required for the Read Horizon (advanceLastReadMessageIndex)
- * to work — Twilio needs to know which participant read the messages so it can
- * send blue-check receipts back to WhatsApp.
- *
- * Chat participants are identified by `identity` (not a phone binding).
+ * Send an audio message via WhatsApp Cloud API using a public URL.
  */
-export async function ensureStaffParticipant(
-  conversationSid: string,
-  identity: string
-): Promise<boolean> {
-  const client = getTwilioClient()
-  const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
-  if (!client || !serviceSid || !conversationSid || !identity) return false
+async function sendWhatsAppAudioMessage(
+  to: string,
+  audioUrl: string
+): Promise<{ waMessageId: string | null }> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
+  if (!phoneNumberId || !accessToken) return { waMessageId: null }
 
-  try {
-    // List current participants and check if one already has this identity
-    const participants = await client.conversations.v1
-      .services(serviceSid)
-      .conversations(conversationSid)
-      .participants.list({ limit: 50 })
+  const normalized = to.replace(/^whatsapp:/i, '').trim()
+  const digits = (normalized.startsWith('+') ? normalized : `+${normalized}`).replace(/^\+/, '')
 
-    const existing = participants.find((p: any) => p.identity === identity)
-    if (existing) return true
+  const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: digits,
+      type: 'audio',
+      audio: { link: audioUrl },
+    }),
+  })
 
-    // Add as a chat participant (no messagingBinding — purely SDK-based)
-    await client.conversations.v1
-      .services(serviceSid)
-      .conversations(conversationSid)
-      .participants.create({ identity })
-
-    return true
-  } catch (err: any) {
-    if (err?.code === 50433) return true
-    if (err?.status === 404 || err?.code === 20404) return false
-    return false
+  if (!resp.ok) {
+    const errData = await resp.json().catch(() => ({}))
+    console.error('[whatsapp] Send audio failed:', resp.status, errData)
+    return { waMessageId: null }
   }
+
+  const data = await resp.json() as any
+  return { waMessageId: data?.messages?.[0]?.id || null }
 }
 
-export async function sendMessageWithTwilio(
+/**
+ * Send a document message via WhatsApp Cloud API.
+ */
+async function sendWhatsAppDocumentMessage(
+  to: string,
+  documentUrl: string,
+  caption?: string,
+  filename?: string
+): Promise<{ waMessageId: string | null }> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
+  if (!phoneNumberId || !accessToken) return { waMessageId: null }
+
+  const normalized = to.replace(/^whatsapp:/i, '').trim()
+  const digits = (normalized.startsWith('+') ? normalized : `+${normalized}`).replace(/^\+/, '')
+
+  const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: digits,
+      type: 'document',
+      document: {
+        link: documentUrl,
+        ...(caption ? { caption } : {}),
+        ...(filename ? { filename } : {}),
+      },
+    }),
+  })
+
+  if (!resp.ok) {
+    const errData = await resp.json().catch(() => ({}))
+    console.error('[whatsapp] Send document failed:', resp.status, errData)
+    return { waMessageId: null }
+  }
+
+  const data = await resp.json() as any
+  return { waMessageId: data?.messages?.[0]?.id || null }
+}
+
+export async function sendMessageWithWhatsApp(
   conversationId: string,
   messageText: string,
   supabaseClient?: any
@@ -513,68 +549,44 @@ export async function sendMessageWithTwilio(
     throw new Error(`Conversation not found: ${conversationId}`)
   }
 
-  // Create message record first so we can update delivery metadata from Twilio callbacks.
+  // Create message record first
   const createdMessage = await sendMessage(conversationId, messageText, 'staff', undefined, supabase)
 
-  const client = getTwilioClient()
-  const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
-
-  if (client && serviceSid) {
+  if (conversation.whatsapp_number) {
     try {
-      // Ensure we have a Twilio Conversation SID
-      const convSid = await ensureConversationSid(
-        conversationId,
-        conversation.whatsapp_number,
-        supabase
-      )
+      const { waMessageId } = await sendWhatsAppCloudMessage(conversation.whatsapp_number, messageText)
 
-      if (!convSid) {
-        return createdMessage
-      }
+      if (waMessageId) {
+        // Update DB record with WhatsApp message ID
+        const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
+          ? (await import('@supabase/supabase-js')).createClient(
+              process.env.NEXT_PUBLIC_SUPABASE_URL!,
+              process.env.SUPABASE_SERVICE_ROLE_KEY
+            )
+          : null
+        const writeClient: any = adminSupabase || supabase
 
-      // Send message via Twilio Conversations API
-      // xTwilioWebhookEnabled triggers onDeliveryUpdated webhooks for REST API calls
-      const twilioMsg = await client.conversations.v1
-        .services(serviceSid)
-        .conversations(convSid)
-        .messages.create({
-          author: 'bot',
-          body: messageText,
-          xTwilioWebhookEnabled: 'true',
-        })
+        const { data: updatedData, error: updateError } = await writeClient
+          .from('conversation_messages')
+          .update({
+            twilio_sid: waMessageId, // reusing column for wa message id
+            delivery_status: 'sent',
+          })
+          .eq('id', createdMessage.id)
+          .select(`*, sender:users(*)`)
+          .single()
 
-      // Update DB record with Twilio message SID and message index
-      const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
-        ? (await import('@supabase/supabase-js')).createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
-          )
-        : null
-      const writeClient: any = adminSupabase || supabase
-
-      const { data: updatedData, error: updateError } = await writeClient
-        .from('conversation_messages')
-        .update({
-          twilio_sid: twilioMsg.sid,
-          message_index: twilioMsg.index ?? null,
-          delivery_status: 'sent',
-        })
-        .eq('id', createdMessage.id)
-        .select(`*, sender:users(*)`)
-        .single()
-
-      if (!updateError && updatedData) {
-        try {
-          await broadcastToConversation(conversationId, updatedData, writeClient, 'UPDATE')
-        } catch (bErr) {
-          // ignore broadcast failures
+        if (!updateError && updatedData) {
+          try {
+            await broadcastToConversation(conversationId, updatedData, writeClient, 'UPDATE')
+          } catch {
+            // ignore
+          }
         }
       }
     } catch {
-      // ignore Twilio errors — message already saved locally
+      // ignore — message already saved locally
     }
-  } else {
-    // Twilio not configured
   }
 
   return createdMessage

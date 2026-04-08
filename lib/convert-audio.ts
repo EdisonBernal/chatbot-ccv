@@ -4,9 +4,8 @@ import { tmpdir } from 'os'
 import path from 'path'
 
 /**
- * Convert audio buffer to MP3 format using ffmpeg.
- * MP3 (audio/mpeg) is the most reliable format for Twilio WhatsApp delivery.
- * OGG Opus is rejected by the Twilio Sandbox (error 63021).
+ * Convert audio buffer to OGG Opus format using ffmpeg.
+ * OGG Opus (audio/ogg; codecs=opus) is WhatsApp's native voice message format.
  * Browsers record as audio/webm or audio/mp4 which need conversion.
  */
 export async function convertAudioForWhatsApp(
@@ -15,8 +14,9 @@ export async function convertAudioForWhatsApp(
 ): Promise<{ buffer: Buffer; contentType: string; extension: string }> {
   const baseType = contentType.split(';')[0].trim().toLowerCase()
 
-  if (baseType === 'audio/mpeg' || baseType === 'audio/mp3') {
-    return { buffer, contentType: 'audio/mpeg', extension: 'mp3' }
+  // Already OGG Opus — no conversion needed
+  if (baseType === 'audio/ogg') {
+    return { buffer, contentType: 'audio/ogg', extension: 'ogg' }
   }
 
   try {
@@ -29,7 +29,7 @@ export async function convertAudioForWhatsApp(
     const id = `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const inputExt = getExtension(baseType)
     const inputPath = path.join(tmpdir(), `${id}_input.${inputExt}`)
-    const outputPath = path.join(tmpdir(), `${id}_output.mp3`)
+    const outputPath = path.join(tmpdir(), `${id}_output.ogg`)
 
     await writeFile(inputPath, buffer)
     console.log(`[convert-audio] Input: ${baseType}, ${buffer.length} bytes, ext=${inputExt}`)
@@ -47,10 +47,11 @@ export async function convertAudioForWhatsApp(
             'acompressor=threshold=-30dB:ratio=3:attack=5:release=200:makeup=12',
             'dynaudnorm=f=150:g=15',
           ].join(','),
-          '-c:a', 'libmp3lame',
-          '-b:a', '128k',
-          '-ar', '44100',
+          '-c:a', 'libopus',
+          '-b:a', '64k',
+          '-ar', '48000',
           '-ac', '1',
+          '-application', 'voip',
           outputPath,
         ],
         { timeout: 30000 },
@@ -67,11 +68,11 @@ export async function convertAudioForWhatsApp(
     })
 
     const convertedBuffer = await readFile(outputPath)
-    console.log(`[convert-audio] Output: audio/mpeg, ${convertedBuffer.length} bytes`)
+    console.log(`[convert-audio] Output: audio/ogg, ${convertedBuffer.length} bytes`)
     unlink(inputPath).catch(() => {})
     unlink(outputPath).catch(() => {})
 
-    return { buffer: convertedBuffer, contentType: 'audio/mpeg', extension: 'mp3' }
+    return { buffer: convertedBuffer, contentType: 'audio/ogg', extension: 'ogg' }
   } catch (err) {
     console.error('[convert-audio] Conversion failed, returning original:', err)
     return { buffer, contentType: baseType, extension: getExtension(baseType) }

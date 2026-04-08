@@ -1,8 +1,9 @@
-import { sendMessage, getConversationById, ensureConversationSid, broadcastToConversation } from '@/lib/services/conversations'
+import { sendMessage, getConversationById, broadcastToConversation } from '@/lib/services/conversations'
 import { convertAudioForWhatsApp } from '@/lib/convert-audio'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
 
 export async function POST(
   request: NextRequest,
@@ -58,7 +59,6 @@ export async function POST(
     }
 
     // Upload media to Supabase Storage if present
-    // For audio: convert to MP3 before uploading (reliable format for Twilio Sandbox)
     let mediaUrl: string | null = null
     let mediaType: string | null = null
     if (mediaFile) {
@@ -73,7 +73,7 @@ export async function POST(
       else if (mediaFile.type.startsWith('video/')) mediaType = 'video'
       else mediaType = 'document'
 
-      // Convert audio to MP3 before storing (Twilio Sandbox compatible)
+      // Convert audio to MP3 before storing (WhatsApp compatible)
       if (mediaType === 'audio') {
         const converted = await convertAudioForWhatsApp(buffer, mediaFile.type)
         buffer = Buffer.from(converted.buffer)
@@ -104,160 +104,192 @@ export async function POST(
     const message = await sendMessage(id, messageText, 'staff', senderDbId, supabase, mediaUrl, mediaType, replyToMessageId)
 
     // If replying to a message, fetch the replied message for the response
+    let replyWamid: string | null = null
     if (replyToMessageId) {
       const { data: repliedMsg } = await writeClient
         .from('conversation_messages')
-        .select('id, message_text, sender_type, media_type, media_url')
+        .select('id, message_text, sender_type, media_type, media_url, twilio_sid')
         .eq('id', replyToMessageId)
         .single()
-      if (repliedMsg) (message as any).replied_message = repliedMsg
+      if (repliedMsg) {
+        (message as any).replied_message = repliedMsg
+        if (repliedMsg.twilio_sid) replyWamid = repliedMsg.twilio_sid
+      }
     }
 
-    // Send via Twilio Conversations API
-    const accountSid = process.env.TWILIO_ACCOUNT_SID
-    const authToken = process.env.TWILIO_AUTH_TOKEN
-    const serviceSid = process.env.CONVERSATIONS_SERVICE_SID
+    // ── Send via WhatsApp Cloud API (fire-and-forget after response) ──
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
 
-    if (accountSid && authToken && serviceSid) {
-      if (!conversation.whatsapp_number) {
-        return NextResponse.json({ error: 'Conversation has no whatsapp number' }, { status: 400 })
-      }
+    if (phoneNumberId && accessToken && conversation.whatsapp_number) {
+      const normalized = conversation.whatsapp_number.replace(/^whatsapp:/i, '').trim()
+      const digits = (normalized.startsWith('+') ? normalized : `+${normalized}`).replace(/^\+/, '')
 
-      try {
-        let convSid = await ensureConversationSid(id, conversation.whatsapp_number, writeClient)
+      // Use after() so the response is sent immediately while WA send happens in background
+      after(async () => {
+        try {
+          let waMessageId: string | null = null
 
-        if (convSid) {
-          const twilio = require('twilio')
-          const client = twilio(accountSid, authToken)
-
-          try {
-            let twilioMsg: any
-            if (mediaUrl && mediaType === 'audio') {
-              // Audio: use Twilio Messaging API (Conversations MCS doesn't support audio for WhatsApp)
-              const whatsappNumber = process.env.TWILIO_WHATSAPP_NUMBER
-              if (whatsappNumber) {
-                const from = whatsappNumber.startsWith('whatsapp:') ? whatsappNumber : `whatsapp:${whatsappNumber}`
-                const to = conversation.whatsapp_number!.startsWith('whatsapp:')
-                  ? conversation.whatsapp_number!
-                  : `whatsapp:${conversation.whatsapp_number}`
-
-                const msgResult = await client.messages.create({
-                  from,
-                  to,
-                  mediaUrl: [mediaUrl],
-                  ...(body.trim() ? { body: body.trim() } : {}),
-                  statusCallback: `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/twilio`,
-                })
-                twilioMsg = { sid: msgResult.sid, index: null }
-              }
-            } else if (mediaUrl) {
-              // Images/other media: upload to Twilio MCS then send via Conversations API
-              const authHeader = 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
-              const mediaResponse = await globalThis.fetch(mediaUrl)
-              const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer())
-
-              const mediaBlob = new Blob([new Uint8Array(mediaBuffer)], { type: mediaFile!.type })
-              const mcsForm = new globalThis.FormData()
-              mcsForm.set('Media', mediaBlob, mediaFile!.name)
-
-              const mcsResponse = await globalThis.fetch(
-                `https://mcs.us1.twilio.com/v1/Services/${serviceSid}/Media`,
-                { method: 'POST', headers: { 'Authorization': authHeader }, body: mcsForm as any }
-              )
-
-              if (mcsResponse.ok) {
-                const mcsData = await mcsResponse.json() as any
-                if (mcsData?.sid) {
-                  twilioMsg = await client.conversations.v1
-                    .services(serviceSid)
-                    .conversations(convSid)
-                    .messages.create({
-                      author: user?.id || 'staff',
-                      body: body.trim() || undefined,
-                      mediaSid: mcsData.sid,
-                      xTwilioWebhookEnabled: 'true',
-                    })
-                }
-              }
-
-              // Fallback: send media URL as text
-              if (!twilioMsg) {
-                twilioMsg = await client.conversations.v1
-                  .services(serviceSid)
-                  .conversations(convSid)
-                  .messages.create({
-                    author: user?.id || 'staff',
-                    body: body.trim() || mediaUrl,
-                    xTwilioWebhookEnabled: 'true',
-                  })
-              }
+          if (mediaUrl && mediaType === 'audio') {
+            const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digits,
+                type: 'audio',
+                audio: { link: mediaUrl },
+                ...(replyWamid ? { context: { message_id: replyWamid } } : {}),
+              }),
+            })
+            if (resp.ok) {
+              const data = await resp.json() as any
+              waMessageId = data?.messages?.[0]?.id || null
             } else {
-              twilioMsg = await client.conversations.v1
-                .services(serviceSid)
-                .conversations(convSid)
-                .messages.create({
-                  author: user?.id || 'staff',
-                  body: body.trim(),
-                  xTwilioWebhookEnabled: 'true',
-                })
+              console.error('[reply] WA audio send failed:', resp.status, await resp.text())
             }
-
-            if (twilioMsg?.sid) {
-              const { error: updateError } = await writeClient
-                .from('conversation_messages')
-                .update({
-                  twilio_sid: twilioMsg.sid,
-                  message_index: twilioMsg.index ?? null,
-                  delivery_status: 'sent',
-                })
-                .eq('id', message.id)
-              if (!updateError) {
-                try {
-                  await broadcastToConversation(id, { ...message, twilio_sid: twilioMsg.sid, message_index: twilioMsg.index ?? null, delivery_status: 'sent' }, writeClient, 'UPDATE')
-                } catch { /* ignore */ }
-              }
-            }
-          } catch (sendErr: any) {
-            if (sendErr?.status === 404 || sendErr?.code === 20404) {
-              await writeClient
-                .from('conversations')
-                .update({ conversation_sid: null })
-                .eq('id', id)
-              const retrySid = await ensureConversationSid(id, conversation.whatsapp_number, writeClient)
-              if (retrySid) {
-                const retryMsg = await client.conversations.v1
-                  .services(serviceSid)
-                  .conversations(retrySid)
-                  .messages.create({
-                    author: user?.id || 'staff',
-                    body: body.trim() || mediaUrl || '',
-                    xTwilioWebhookEnabled: 'true',
-                  })
-                if (retryMsg?.sid) {
-                  await writeClient
-                    .from('conversation_messages')
-                    .update({ twilio_sid: retryMsg.sid, message_index: retryMsg.index ?? null, delivery_status: 'sent' })
-                    .eq('id', message.id)
-                }
-              }
+          } else if (mediaUrl && mediaType === 'image') {
+            const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digits,
+                type: 'image',
+                image: {
+                  link: mediaUrl,
+                  ...(body.trim() ? { caption: body.trim() } : {}),
+                },
+                ...(replyWamid ? { context: { message_id: replyWamid } } : {}),
+              }),
+            })
+            if (resp.ok) {
+              const data = await resp.json() as any
+              waMessageId = data?.messages?.[0]?.id || null
             } else {
-              throw sendErr
+              console.error('[reply] WA image send failed:', resp.status, await resp.text())
+            }
+          } else if (mediaUrl && (mediaType === 'video' || mediaType === 'document')) {
+            const waType = mediaType === 'video' ? 'video' : 'document'
+            const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digits,
+                type: waType,
+                [waType]: {
+                  link: mediaUrl,
+                  ...(body.trim() ? { caption: body.trim() } : {}),
+                },
+                ...(replyWamid ? { context: { message_id: replyWamid } } : {}),
+              }),
+            })
+            if (resp.ok) {
+              const data = await resp.json() as any
+              waMessageId = data?.messages?.[0]?.id || null
+            } else {
+              console.error(`[reply] WA ${waType} send failed:`, resp.status, await resp.text())
+            }
+          } else if (body.trim()) {
+            const resp = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digits,
+                type: 'text',
+                text: { body: body.trim() },
+                ...(replyWamid ? { context: { message_id: replyWamid } } : {}),
+              }),
+            })
+            if (resp.ok) {
+              const data = await resp.json() as any
+              waMessageId = data?.messages?.[0]?.id || null
+            } else {
+              console.error('[reply] WA text send failed:', resp.status, await resp.text())
             }
           }
-        }
-      } catch {
-        // ignore Twilio errors
-      }
-    }
 
-    // Update conversation last message timestamp
-    await supabase
-      .from('conversations')
-      .update({
-        last_message: messageText,
-        last_message_at: new Date().toISOString(),
+          if (waMessageId) {
+            // Save twilio_sid and set status to 'sent'
+            const adminSb = createSupabaseAdmin(
+              process.env.NEXT_PUBLIC_SUPABASE_URL!,
+              process.env.SUPABASE_SERVICE_ROLE_KEY!
+            )
+            const { error: updateError } = await adminSb
+              .from('conversation_messages')
+              .update({
+                twilio_sid: waMessageId,
+                delivery_status: 'sent',
+              })
+              .eq('id', message.id)
+            if (!updateError) {
+              try {
+                await broadcastToConversation(id, { ...message, twilio_sid: waMessageId, delivery_status: 'sent' }, adminSb, 'UPDATE')
+              } catch { /* ignore */ }
+            }
+
+            // Update conversation last message timestamp
+            await adminSb
+              .from('conversations')
+              .update({
+                last_message: messageText,
+                last_message_at: new Date().toISOString(),
+              })
+              .eq('id', id)
+          } else {
+            // WhatsApp send failed — mark as failed
+            const adminSb = createSupabaseAdmin(
+              process.env.NEXT_PUBLIC_SUPABASE_URL!,
+              process.env.SUPABASE_SERVICE_ROLE_KEY!
+            )
+            await adminSb
+              .from('conversation_messages')
+              .update({ delivery_status: 'failed' })
+              .eq('id', message.id)
+            try {
+              await broadcastToConversation(id, { ...message, delivery_status: 'failed' }, adminSb, 'UPDATE')
+            } catch { /* ignore */ }
+          }
+        } catch (err) {
+          console.error('[reply] WhatsApp send error:', err)
+        }
       })
-      .eq('id', id)
+    } else {
+      // No WhatsApp configured — just update conversation timestamp
+      after(async () => {
+        try {
+          const adminSb = process.env.SUPABASE_SERVICE_ROLE_KEY
+            ? createSupabaseAdmin(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY)
+            : null
+          const wc: any = adminSb || supabase
+          await wc
+            .from('conversations')
+            .update({
+              last_message: messageText,
+              last_message_at: new Date().toISOString(),
+            })
+            .eq('id', id)
+        } catch { /* ignore */ }
+      })
+    }
 
     return NextResponse.json(message, { status: 201 })
   } catch (e: unknown) {

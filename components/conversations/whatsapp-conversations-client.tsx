@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import type { Conversation, ConversationMessage } from '@/lib/types'
-import { useTwilioConversations } from '@/hooks/use-twilio-conversations'
 import { CONVERSATION_STATUS_LABELS, CONVERSATION_STATUS_COLORS } from '@/lib/types'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -144,6 +143,7 @@ export function WhatsAppConversationsClient({
   const selectedConversationRef = useRef<Conversation | null>(null)
   const viewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesCacheRef = useRef<Map<string, ConversationMessage[]>>(new Map())
+  const typingDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isPrefetching, setIsPrefetching] = useState(true)
 
   // ── Prefetch messages for all conversations on mount (WhatsApp-style) ──
@@ -196,34 +196,6 @@ export function WhatsAppConversationsClient({
     prefetch()
     return () => { cancelled = true }
   }, [])
-
-  // ── Twilio Conversations SDK: Read Horizon (blue check marks) ──────────
-  // Connects the browser to Twilio via WebSocket so that when the staff reads
-  // messages, the SDK calls advanceLastReadMessageIndex() and Twilio relays
-  // blue checks to the patient's WhatsApp.
-  // Also receives real-time delivery status updates (sent → delivered → read)
-  // from the SDK, updating the UI faster than Supabase Realtime.
-  const handleTwilioDeliveryUpdate = useCallback((messageSid: string, status: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.twilio_sid === messageSid ? { ...m, delivery_status: status as any } : m
-      )
-    )
-  }, [])
-
-  const { isConnected: twilioConnected, advanceReadHorizon } = useTwilioConversations({
-    conversationId: selectedConversation?.id ?? null,
-    enabled: !!selectedConversation,
-    onMessageUpdated: handleTwilioDeliveryUpdate,
-  })
-
-  // When the Twilio SDK connects (async), advance read horizon immediately
-  // so the blue checks reach WhatsApp even if the REST /read call raced ahead.
-  useEffect(() => {
-    if (twilioConnected && selectedConversation) {
-      advanceReadHorizon().catch(() => {})
-    }
-  }, [twilioConnected, selectedConversation?.id, advanceReadHorizon])
 
   // Debounced call to update last_view_at so the server knows the user is
   // still viewing this conversation (keeps unread counts accurate on refresh).
@@ -505,6 +477,26 @@ export function WhatsAppConversationsClient({
               prev && prev.id === conversationId ? { ...prev, status: newStatus } : prev
             )
           })
+          .on('broadcast', { event: 'NEW_CONVERSATION' }, (payload) => {
+            const raw: any = payload?.payload ?? payload ?? {}
+            const conversationId = raw.conversation_id
+            console.log('[realtime] NEW_CONVERSATION received:', conversationId, raw)
+            if (!conversationId) return
+
+            // Fetch the full conversation (with patient data) and prepend it
+            fetch('/api/conversations')
+              .then((res) => res.json())
+              .then((allConvs: Conversation[]) => {
+                const newConv = allConvs.find((c: Conversation) => c.id === conversationId)
+                if (!newConv) return
+                setConversations((prev) => {
+                  // Don't add if already exists
+                  if (prev.some((c) => c.id === conversationId)) return prev
+                  return [{ ...newConv, unread_count: 1 }, ...prev]
+                })
+              })
+              .catch(() => {})
+          })
           .subscribe(() => {})
 
         // Subscribe to currently selected conversation (if any)
@@ -733,7 +725,6 @@ export function WhatsAppConversationsClient({
     )
     fetch(`/api/conversations/${conv.id}/read`, { method: 'POST' }).catch(() => {})
     fetch(`/api/conversations/${conv.id}/view`, { method: 'POST' }).catch(() => {})
-    advanceReadHorizon().catch(() => {})
 
     // Fetch fresh messages in background
     try {
@@ -1668,6 +1659,11 @@ export function WhatsAppConversationsClient({
                 value={reply}
                 onChange={(e) => {
                   setReply(e.target.value)
+                  // Debounced typing indicator — fire at most once every 25s (matches WA indicator duration)
+                  if (e.target.value.trim() && !typingDebounceRef.current && selectedConversation) {
+                    fetch(`/api/conversations/${selectedConversation.id}/typing`, { method: 'POST' }).catch(() => {})
+                    typingDebounceRef.current = setTimeout(() => { typingDebounceRef.current = null }, 25000)
+                  }
                 }}
                 onBlur={() => {}}
                 onPaste={handlePaste}

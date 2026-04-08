@@ -8,7 +8,7 @@ import {
   clearChatbotSessionState,
   logChatbotExecution,
 } from '@/lib/services/chatbot'
-import { sendMessageWithTwilio, getConversationById, broadcastConversationStatusChange } from '@/lib/services/conversations'
+import { sendMessageWithWhatsApp, getConversationById, broadcastConversationStatusChange } from '@/lib/services/conversations'
 import type { ChatbotConfig, ChatbotStep, ChatbotStepAction } from '@/lib/types'
 
 /** Session expires after 30 minutes of inactivity */
@@ -438,8 +438,51 @@ export class ChatbotEngine {
       message = message.replace(new RegExp(placeholder, 'g'), value || '')
     }
 
-    // Enviar mensaje vía Twilio + guardar en DB
-    await sendMessageWithTwilio(this.conversationId, message, this.supabase)
+    // Send typing indicator before responding
+    await this.sendTypingIndicator()
+
+    // Enviar mensaje vía WhatsApp Cloud API + guardar en DB
+    await sendMessageWithWhatsApp(this.conversationId, message, this.supabase)
+  }
+
+  /**
+   * Send typing indicator to WhatsApp so user sees "typing..." bubble
+   */
+  private async sendTypingIndicator(): Promise<void> {
+    try {
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
+      const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
+      if (!phoneNumberId || !accessToken) return
+
+      // Get the last patient message wamid
+      const { data: lastMsg } = await this.supabase
+        .from('conversation_messages')
+        .select('twilio_sid')
+        .eq('conversation_id', this.conversationId)
+        .eq('sender_type', 'patient')
+        .not('twilio_sid', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+
+      if (!lastMsg?.twilio_sid) return
+
+      await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: lastMsg.twilio_sid,
+          typing_indicator: { type: 'text' },
+        }),
+      })
+    } catch {
+      // Typing indicator is best-effort, don't fail the message send
+    }
   }
 
   /**
